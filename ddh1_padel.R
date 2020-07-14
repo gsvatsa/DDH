@@ -9,9 +9,11 @@ padel <- read_csv("padel_descriptors_1d_2d.csv")
 moldesc <- padel[, -1]
 vars <- names(moldesc)
 
-mols <- cbind(smiles, padel)
+mols <- cbind(smiles, moldesc)
 
-train_test_rows = which(!is.na(smiles$pIC50))
+all_rows = 1:nrow(smiles)
+train_test_rows = which(!is.na(mols$pIC50))
+blinded_rows = all_rows[-train_test_rows]
 
 # Activity correlation
 activ_cors = apply(moldesc[train_test_rows,], 2, FUN = function(v) {
@@ -21,32 +23,40 @@ activ_cors = apply(moldesc[train_test_rows,], 2, FUN = function(v) {
   }, finally = {return(r)})
 }) 
 
-# Select top-n vars based on correlation with activity from padel dataset
-nvars = ceiling(length(train_test_rows)/1.25) * 0.7
-model_vars = vars[head(sort.list(abs(activ_cors), decreasing = T), nvars)]
+useSMLR = TRUE
+if (useSMLR) {
+  df <- read_csv("output_SMLR.csv")
+  sel_vars <- names(df)[names(df) %in% vars]
+} else {
+  # Select top-n vars based on correlation with activity from padel dataset
+  nvars = ceiling(length(train_test_rows)/1.25) * 0.7
+  sel_vars = vars[head(sort.list(abs(activ_cors), decreasing = T), nvars)]
+  
+  # Cross Correlation
+  x_cors = cor(moldesc[train_test_rows, sel_vars])
+}
 
-# Cross Correlation
-x_cors = cor(moldesc[train_test_rows, model_vars])
 
+
+  
 # Train-Test split
 set.seed(1000)
 test_rows = sample(train_test_rows, 0.3*floor(length(train_test_rows)))
 train_rows = train_test_rows[-test_rows]
 
 # Prepare data for Regression
-train_mols = cbind(smiles[train_rows,], moldesc[train_rows, model_vars])
+train_mols = mols[train_rows, append(sel_vars, "pIC50")]
 
 # Step-wise regression model
-lm <- lm(pIC50 ~ ., data = train_mols[ ,append(model_vars, "pIC50")])
+lm <- lm(pIC50 ~ ., data = train_mols)
 slm <- step(lm)
 summary(slm)
 
-pval = 1
-coefs <- coef(summary(slm))
-final_vars <- names(which(coefs[-1,4] <= pval))
-
 # Model Diagnostics
 model <- slm
+pval = 1
+coefs <- coef(summary(model))
+model_vars <- names(which(coefs[-1,4] <= pval))
 plot(model)
 
 # R-squared and adjusted R-squared
@@ -65,20 +75,6 @@ plot(ecdf(stdres))
 plot(density(stdres, na.rm = T))
 shapiro.test(stdres)
 
-# MAE and MAPE
-mae <- mean(abs(y_test - yhat_test))
-print(paste("MAE = ", mae))
-mape <- mean(abs((y_test - yhat_test)/y_test))
-mape
-
-# LOO-CV Q^2
-yhat_cv <- sapply(1:nrow(train_mols), FUN=function(i) {
-  fit <- lm(pIC50 ~ ., data = train_mols[-i,append(final_vars, "pIC50")])
-  predict(fit, newdata = train_mols[i, final_vars])
-})
-
-y_train = smiles$pIC50[train_rows]
-
 # LOO-CV residuals from rstandard help page
 err_cv = rstandard(model, type="predictive")^2
 PRESS <- sum(err_cv, na.rm = T)
@@ -95,6 +91,12 @@ plot(y_test, yhat_test)
 
 q_sq_ext = 1.0 - sum((y_test - yhat_test)^2)/sum((y_test - mean(y_train))^2)
 print(paste("Q2ext = ", q_sq_ext))
+
+# MAE and MAPE
+mae <- mean(abs(y_test - yhat_test))
+print(paste("MAE = ", mae))
+mape <- mean(abs((y_test - yhat_test)/y_test))
+mape
 
 # Tropsha's Criteria
 y <- smiles$pIC50[train_test_rows]
@@ -119,7 +121,16 @@ summary(lm_pred_obs0)
 r0_dash_sq = summary(lm_pred_obs0)$r.squared
 print(paste("Tropsha Condition 4 = ", (r_dash_sq-r0_dash_sq)/r_dash_sq, " and k\' = ", k_dash))
 
-print(paste("Tropsha Condition 4 = ", abs(r0_sq - r0_dash_sq)))
+print(paste("Tropsha Condition 5 = ", abs(r0_sq - r0_dash_sq)))
+
+# Final Variables
+pval = 1
+coefs <- coef(summary(slm))
+final_vars <- names(which(coefs[-1,4] <= pval))
+
+# Applicability Domain
+
+
 
 
 
