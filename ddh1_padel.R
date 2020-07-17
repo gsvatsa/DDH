@@ -13,7 +13,7 @@ mols <- cbind(smiles, moldesc)
 
 all_rows = 1:nrow(smiles)
 train_test_rows = which(!is.na(mols$pIC50))
-blinded_rows = all_rows[-train_test_rows]
+blinded_rows = all_rows[is.na(mols$pIC50)]
 
 # Activity correlation
 activ_cors = apply(moldesc[train_test_rows,], 2, FUN = function(v) {
@@ -23,7 +23,7 @@ activ_cors = apply(moldesc[train_test_rows,], 2, FUN = function(v) {
   }, finally = {return(r)})
 }) 
 
-useSMLR = TRUE
+useSMLR = T
 if (useSMLR) {
   df <- read_csv("output_SMLR.csv")
   sel_vars <- names(df)[names(df) %in% vars]
@@ -34,15 +34,14 @@ if (useSMLR) {
   
   # Cross Correlation
   x_cors = cor(moldesc[train_test_rows, sel_vars])
+  hi_cors <- which(x_cors > 0.5, arr.ind = T)
 }
-
-
 
   
 # Train-Test split
-set.seed(1000)
+set.seed(1024)
 test_rows = sample(train_test_rows, 0.3*floor(length(train_test_rows)))
-train_rows = train_test_rows[-test_rows]
+train_rows = setdiff(train_test_rows, test_rows)
 
 # Prepare data for Regression
 train_mols = mols[train_rows, append(sel_vars, "pIC50")]
@@ -90,7 +89,7 @@ cor(yhat_test, y_test)
 plot(y_test, yhat_test)
 
 q_sq_ext = 1.0 - sum((y_test - yhat_test)^2)/sum((y_test - mean(y_train))^2)
-print(paste("Q2ext = ", q_sq_ext))
+print(paste("Q2extF1 = ", q_sq_ext))
 
 # MAE and MAPE
 mae <- mean(abs(y_test - yhat_test))
