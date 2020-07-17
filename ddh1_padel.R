@@ -12,8 +12,8 @@ vars <- names(moldesc)
 mols <- cbind(smiles, moldesc)
 
 all_rows = 1:nrow(smiles)
-train_test_rows = which(!is.na(mols$pIC50))
-blinded_rows = all_rows[is.na(mols$pIC50)]
+train_test_rows = which(!is.na(smiles$pIC50))#[-c(32,43)]
+blinded_rows = all_rows[is.na(smiles$pIC50)]
 
 # Activity correlation
 activ_cors = apply(moldesc[train_test_rows,], 2, FUN = function(v) {
@@ -63,12 +63,12 @@ rsq = summary(model)$r.squared
 print(paste("R2 = ", rsq))
 
 # Empirical CDF/Density and Shapiro-Wilkes test for normality of residuals
-stdres = rstandard(model)
-qqnorm(stdres, 
+train_stdres = rstandard(model)
+qqnorm(train_stdres, 
        ylab="Standardized Residuals", 
        xlab="Normal Scores", 
        main="DDH-01-Padel") 
-qqline(stdres)
+qqline(train_stdres)
 
 plot(ecdf(stdres))
 plot(density(stdres, na.rm = T))
@@ -83,11 +83,15 @@ q_sq = 1 - PRESS/tot_sq
 print(paste("LOO-Q2 = ", q_sq))
 
 # Q2 ext F1
-yhat_test <- predict(model, newdata = moldesc[test_rows, model_vars])
+pred_test <- predict(model, newdata = moldesc[test_rows, model_vars], se.fit = T)
+yhat_test <- pred_test$fit
+test_stdres <- pred_test$se.fit
 y_test = smiles$pIC50[test_rows]
 cor(yhat_test, y_test)
 plot(y_test, yhat_test)
-
+pred_test <- data.frame(y_test = y_test, yhat_test = yhat_test)
+write_csv(pred_test, "pred_test.csv")
+y_train = smiles$pIC50[train_rows]
 q_sq_ext = 1.0 - sum((y_test - yhat_test)^2)/sum((y_test - mean(y_train))^2)
 print(paste("Q2extF1 = ", q_sq_ext))
 
