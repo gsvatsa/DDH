@@ -70,9 +70,9 @@ qqnorm(train_stdres,
        main="DDH-01-Padel") 
 qqline(train_stdres)
 
-plot(ecdf(stdres))
-plot(density(stdres, na.rm = T))
-shapiro.test(stdres)
+plot(ecdf(train_stdres))
+plot(density(train_stdres, na.rm = T))
+shapiro.test(train_stdres)
 
 # LOO-CV residuals from rstandard help page
 err_cv = rstandard(model, type="predictive")^2

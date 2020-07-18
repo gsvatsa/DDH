@@ -26,10 +26,15 @@ if (fit$pval > alpha) {
 # Leverage and Williams Plot
 X <- as.matrix(train_moldesc)
 X_sq_inv <- Inverse(t(X) %*% X)
+
+# Warning Leverage
+h_warn <- 3*(ncol(X) + 1)/nrow(X) 
+
+# Williams Plot
 desc <- train_moldesc
 h_train <- apply(desc, 1, FUN = function(x) {
   t(x) %*% X_sq_inv %*% x
-})s
+})
 w_train <- data.frame(stdres = train_stdres, h = h_train, class = "train")
 rownames(w_train) <- paste("T",seq_along(h_train), sep="")
 desc <- test_moldesc
@@ -42,17 +47,19 @@ w <- rbind(w_train, w_test)
 
 ggplot(data = w, aes(x = h, y = stdres, shape = class, label = rownames(w))) +
   geom_point() +
-  geom_text()
+  geom_text() +
+  geom_hline(yintercept = mean(w_train$stdres) + 2*sd(w_train$stdres), color = "red") +
+  geom_hline(yintercept = mean(w_train$stdres) - 2*sd(w_train$stdres), color = "red") +
+  geom_vline(xintercept = h_warn, color = "red")
 
 desc <- blinded_moldesc
 h <- apply(desc, 1, FUN = function(x) {
   t(x) %*% X_sq_inv %*% x
 })
-# Warning Leverage
-h_star <- 3*ncol(train_moldesc)/nrow(train_moldesc) 
 
-in_AD_Leverage = which(h <= h_star)
-out_AD_Leverage = which(h > h_star)
+
+in_AD_Leverage = which(h <= h_warn)
+out_AD_Leverage = which(h > h_warn)
 
 # Multivariate Chebyshev Inequality with Estimated Mean and Variance by Stellato
 multivariate_chebychev <- function(train_test_mols, ext_mols) {
@@ -72,20 +79,43 @@ train_moldesc <- moldesc[train_rows, model_vars]
 test_moldesc <- moldesc[test_rows, model_vars]
 blinded_moldesc <- moldesc[blinded_rows, model_vars]
 
+probs_train <- multivariate_chebychev(train_moldesc, train_moldesc)
+probs_test <- multivariate_chebychev(train_moldesc, test_moldesc)
+probs_train_test <- multivariate_chebychev(train_test_moldesc, train_test_moldesc)
 probs <- multivariate_chebychev(train_moldesc, blinded_moldesc)
-in_AD_Chebychev <- blinded_rows[probs >= 0.05 & probs <= 0.95]
-out_AD_Chebychev <- setdiff(blinded_rows, in_AD_rows)
+
+in_AD_Chebychev <- which(probs >= min(probs_train) & probs <= max(probs_train))
+out_AD_Chebychev <- seq_along(probs)[-in_AD_Chebychev]
 
 # Tanimoto AD
 
-train_mols <- parse.smiles(smiles$SMILES[train_test_rows])
-test_mols <- parse.smiles(smiles$SMILES[blinded_rows])
+train_mols <- parse.smiles(smiles$SMILES[train_rows])
+test_mols <- parse.smiles(smiles$SMILES[test_rows])
+train_test_mols <- parse.smiles(smiles$SMILES[train_test_rows])
+blinded_mols <- parse.smiles(smiles$SMILES[blinded_rows])
 
-fps_train <- lapply(train_mols, get.fingerprint, type='circular')
-fps_test <- lapply(test_mols, get.fingerprint, type='circular')
+sig_type = 'substructure'
+fps_train <- lapply(train_mols, get.fingerprint, type=sig_type)
+fps_test <- lapply(test_mols, get.fingerprint, type=sig_type)
+fps_train_test <- lapply(train_test_mols, get.fingerprint, type=sig_type)
+fps_blinded <- lapply(blinded_mols, get.fingerprint, type=sig_type)
 
-fp.sim <- fingerprint::fp.sim.matrix(fps_train, fps_test, method='tanimoto')
-max_rows <- apply(fp.sim, 2, which.max)
+test_sim <- fingerprint::fp.sim.matrix(fps_train, fps_test, method='tanimoto')
+max_rows_test <- apply(test_sim, 2, which.max)
+max_sims_test <- data.frame(row = max_rows_test, col = seq_along(max_rows_test))
+max_sims_test$sim <- sapply(seq_along(max_rows_test), FUN = function(col) {
+  test_sim[max_rows_test[col], col]
+})
+
+blinded_sim <- fingerprint::fp.sim.matrix(fps_train_test, fps_blinded, method='tanimoto')
+max_rows <- apply(blinded_sim, 2, which.max)
+max_sims <- data.frame(row = max_rows, col = seq_along(max_rows))
+max_sims$sim <- sapply(seq_along(max_rows), FUN = function(col) {
+  blinded_sim[max_rows[col], col]
+})
+
+in_AD_Tanimoto <- which(max_sims$sim >= 0.8)
+out_AD_Tanimoto <- which(max_sims$sim < 0.8)
 
 
 
