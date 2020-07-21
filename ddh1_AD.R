@@ -107,16 +107,14 @@ blinded_mols <- parse.smiles(smiles$SMILES[blinded_rows])
 # 1-NN in Training based on Test pIC50 (activity)
 y_train <- smiles$pIC50[train_rows]
 y_test <- smiles$pIC50[test_rows]
-pic_sims <- data.frame(t(rbind(sapply(seq_along(y_test), FUN = function(i) {
+activ_1nn <- sapply(y_test, FUN = function(y) {which.min(abs(y_train - y))})
+activ_1nn_sim <- sapply(seq_along(activ_1nn), FUN = function(i) {
   y <- y_test[i]
-  row <- which.min(abs(y_train - y))
-  col <- i
-  sim <- abs(y_train[row] - y)
-  data.frame(row = row, col = col, sim = sim)
-}))))
-sim <- unlist(pic_sims$sim)
+  row <- activ_1nn[i]
+  abs(y_train[row] - y)
+})
 
-# Best sig_type using RMSE between 1-NN Activity and 1-NN Tanimoto similarity
+# Best sig_type using RMSE between 1-NN Activity and 1-NN Tanimoto similarity on training set
 sig_types = c('standard', 'extended', 'graph', 'hybridization', 
               'maccs', 'estate', 'pubchem', 'shortestpath', 
               'circular', 'substructure')
@@ -128,41 +126,31 @@ rmse <- sapply(sig_types, FUN = function(sig_type) {
   test_sim <- fingerprint::fp.sim.matrix(fps_train, fps_test, method='tanimoto')
   
   # 1-NN Tanimoto
-  max_rows_test <- apply(test_sim, 2, which.max)
-  max_sims_test <- data.frame(row = max_rows_test, col = seq_along(max_rows_test))
-  max_sims_test$sim <- sapply(seq_along(max_rows_test), FUN = function(col) {
-    test_sim[max_rows_test[col], col]
-  })
-  
-  sim2 <- sapply(seq_along(max_rows_test), FUN = function(i) {
+  tanimoto_1nn <- apply(test_sim, 2, which.max)
+  tanimoto_1nn_sim <- sapply(seq_along(tanimoto_1nn), FUN = function(i) {
     y <- y_test[i]
-    row <- max_rows_test[i]
+    row <- tanimoto_1nn[i]
     abs(y_train[row] - y)
   })
-  gc(full = T)
-  sqrt(mean((sim - sim2)^2))
+
+  sqrt(mean((activ_1nn_sim - tanimoto_1nn_sim)^2))
 
 })
 
-
 sig_type = names(which.min(rmse))
-fps_train_test <- lapply(train_test_mols, get.fingerprint, type=sig_type)
+fps_train <- lapply(train_mols, get.fingerprint, type=sig_type)
 fps_blinded <- lapply(blinded_mols, get.fingerprint, type=sig_type)
 
-blinded_sim <- fingerprint::fp.sim.matrix(fps_train_test, fps_blinded, method='tanimoto')
-max_rows <- apply(blinded_sim, 2, which.max)
-max_sims <- data.frame(row = max_rows, col = seq_along(max_rows))
-max_sims$sim <- sapply(seq_along(max_rows), FUN = function(col) {
-  blinded_sim[max_rows[col], col]
+blinded_sim <- fingerprint::fp.sim.matrix(fps_train, fps_blinded, method='tanimoto')
+tanimoto_1nn <- apply(blinded_sim, 2, which.max)
+tanimoto_1nn_sim <- sapply(seq_along(tanimoto_1nn), FUN = function(col) {
+  blinded_sim[tanimoto_1nn[col], col]
 })
 
 sim_threshold <- 0.8
 
-in_AD_test_Tanimoto <- which(max_sims_test$sim >= sim_threshold)
-out_AD_test_Tanimoto <- which(max_sims_test$sim < sim_threshold)
-
-in_AD_Tanimoto <- which(max_sims$sim >= sim_threshold)
-out_AD_Tanimoto <- which(max_sims$sim < sim_threshold)
+in_AD_Tanimoto <- which(tanimoto_1nn_sim >= sim_threshold)
+out_AD_Tanimoto <- which(tanimoto_1nn_sim < sim_threshold)
 
 out_AD <- Reduce(intersect, list(out_AD_Leverage, out_AD_Chebychev, out_AD_Tanimoto))
 
