@@ -58,9 +58,16 @@ coefs <- coef(summary(model))
 model_vars <- names(which(coefs[-1,4] <= pval))
 plot(model)
 
-# R-squared and adjusted R-squared
+# R-squared (Training)
 rsq = summary(model)$r.squared
-print(paste("R2 = ", rsq))
+print(paste("R^2 (Training) = ", rsq))
+
+# Standard Error of Estimation (Training)
+y_train <- smiles$pIC50[train_rows]
+pred_train <- predict(model, se.fit = T)
+yhat_train <- pred_train$fit
+see_train <- sqrt(mean((y_train - yhat_train)^2))
+print(paste("Standard Error of Estimation (Training) = ", see_train))
 
 # Empirical CDF/Density and Shapiro-Wilkes test for normality of residuals
 train_stdres = rstandard(model)
@@ -80,7 +87,7 @@ PRESS <- sum(err_cv, na.rm = T)
 y_cv = y[!is.nan(err_cv)]
 tot_sq = sum((y_cv - mean(y_train))^2)
 q_sq = 1 - PRESS/tot_sq
-print(paste("LOO-Q2 = ", q_sq))
+print(paste("LOO-Q2 (Training) = ", q_sq))
 
 # Q2 ext F1
 pred_test <- predict(model, newdata = moldesc[test_rows, model_vars], se.fit = T)
@@ -91,13 +98,15 @@ cor(yhat_test, y_test)
 plot(y_test, yhat_test)
 pred_test <- data.frame(y_test = y_test, yhat_test = yhat_test)
 write_csv(pred_test, "pred_test.csv")
-y_train = smiles$pIC50[train_rows]
+
 q_sq_ext = 1.0 - sum((y_test - yhat_test)^2)/sum((y_test - mean(y_train))^2)
 print(paste("Q2extF1 = ", q_sq_ext))
 
 # MAE and MAPE
-mae <- mean(abs(y_test - yhat_test))
-print(paste("MAE = ", mae))
+mae_train <- mean(abs(y_train - yhat_train))
+print(paste("MAE (Training) = ", mae_train))
+mae_test <- mean(abs(y_test - yhat_test))
+print(paste("MAE (Test) = ", mae_test))
 mape <- mean(abs((y_test - yhat_test)/y_test))
 mape
 
@@ -114,7 +123,7 @@ r_sq = summary(lm_obs_pred)$r.squared
 lm_obs_pred0 <- lm(y ~ y_pred - 1)
 summary(lm_obs_pred0)
 r0_sq = summary(lm_obs_pred0)$r.squared
-print(paste("Tropsha Condition 3 = ", (r_sq-r0_sq)/r_sq, " and k = ", k))
+tropsha_3 = (r_sq-r0_sq)/r_sq
 
 lm_pred_obs <- lm(y_pred ~ y)
 summary(lm_pred_obs)
@@ -122,9 +131,16 @@ r_dash_sq = summary(lm_pred_obs)$r.squared
 lm_pred_obs0 <- lm(y_pred ~ y - 1)
 summary(lm_pred_obs0)
 r0_dash_sq = summary(lm_pred_obs0)$r.squared
-print(paste("Tropsha Condition 4 = ", (r_dash_sq-r0_dash_sq)/r_dash_sq, " and k\' = ", k_dash))
+tropsha_4 = (r_dash_sq-r0_dash_sq)/r_dash_sq
 
-print(paste("Tropsha Condition 5 = ", abs(r0_sq - r0_dash_sq)))
+tropsha_5 = abs(r0_sq - r0_dash_sq)
+
+print("Tropsha's Conditions:")
+print(paste("3a: (r_sq-r0_sq)/r_sq =", tropsha_3, "< 0.1:", tropsha_3 < 0.1))
+print(paste("3b: k =", k, ", 0.85 <= k <= 1.15:", k >= 0.85 & k <= 1.15))
+print(paste("4a: (r\'_sq-r0\'_sq)/r\'_sq =", tropsha_4, "< 0.1:", tropsha_4 < 0.1))
+print(paste("4b: k\' =", k_dash, ", 0.85 <= k\' <= 1.15:", k_dash >= 0.85 & k_dash <= 1.15))
+print(paste("5: |r0_sq - r0\'_sq| =", tropsha_5, " < 0.3:", tropsha_5 < 0.3))
 
 # Final Variables
 pval = 1
