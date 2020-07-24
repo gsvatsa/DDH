@@ -59,8 +59,8 @@ model_vars <- names(which(coefs[-1,4] <= pval))
 plot(model)
 
 # R-squared (Training)
-rsq = summary(model)$r.squared
-print(paste("R^2 (Training) = ", rsq))
+rsq_train = summary(model)$r.squared
+print(paste("R-squared (Training) = ", rsq_train))
 
 # Standard Error of Estimation (Training)
 y_train <- smiles$pIC50[train_rows]
@@ -83,11 +83,10 @@ shapiro.test(train_stdres)
 
 # LOO-CV residuals from rstandard help page
 err_cv = rstandard(model, type="predictive")^2
-PRESS <- sum(err_cv, na.rm = T)
-y_cv = y[!is.nan(err_cv)]
-tot_sq = sum((y_cv - mean(y_train))^2)
-q_sq = 1 - PRESS/tot_sq
-print(paste("LOO-Q2 (Training) = ", q_sq))
+PRESS_train <- sum(err_cv, na.rm = T)
+tot_sq = sum((y_train - mean(y_train))^2)
+q_sq_train = 1 - PRESS_train/tot_sq
+print(paste("LOO-Q2 (Training) = ", q_sq_train))
 
 # Q2 ext F1
 pred_test <- predict(model, newdata = moldesc[test_rows, model_vars], se.fit = T)
@@ -111,6 +110,8 @@ mape <- mean(abs((y_test - yhat_test)/y_test))
 mape
 
 # Tropsha's Criteria
+r_sq_test = 1 - sum((y_test - yhat_test)^2)/sum((y_test - mean(y_test))^2)
+
 y <- smiles$pIC50[train_test_rows]
 y_pred <- predict(model, newdata = moldesc[train_test_rows, model_vars])
 
@@ -136,6 +137,8 @@ tropsha_4 = (r_dash_sq-r0_dash_sq)/r_dash_sq
 tropsha_5 = abs(r0_sq - r0_dash_sq)
 
 print("Tropsha's Conditions:")
+print(paste("2: Q-squared (Training)=", q_sq_train,"> 0.5", q_sq_train > 0.5))
+print(paste("2: R-squared (Test)=", r_sq_test,"> 0.6", r_sq_test > 0.6))
 print(paste("3a: (r_sq-r0_sq)/r_sq =", tropsha_3, "< 0.1:", tropsha_3 < 0.1))
 print(paste("3b: k =", k, ", 0.85 <= k <= 1.15:", k >= 0.85 & k <= 1.15))
 print(paste("4a: (r\'_sq-r0\'_sq)/r\'_sq =", tropsha_4, "< 0.1:", tropsha_4 < 0.1))
@@ -147,9 +150,9 @@ pval = 1
 coefs <- coef(summary(slm))
 final_vars <- names(which(coefs[-1,4] <= pval))
 
-# Applicability Domain
-
-
+# Blinded Predictions
+blinded_moldesc <- moldesc[blinded_rows, model_vars]
+y_blinded <- predict(model, newdata = blinded_moldesc)
 
 
 

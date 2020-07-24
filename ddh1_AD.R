@@ -168,17 +168,17 @@ out_AD <- Reduce(intersect, list(out_AD_Leverage, out_AD_Chebychev, out_AD_Tanim
 
 
 
-library(readxl)
-test_AD <- read_excel("~/Downloads/AD-MDI version 1.2/Output/blinded_AD.xlsx")
-names(test_AD)[3] = "Pred_Error"
-
-fit <- lm(Pred_Error ~ MDI - 1, data = test_AD)
-summary(fit)
-plot(Pred_Error ~ MDI, data = test_AD)
-
-library(readr)
-blinded_QueryMDI <- read_delim("~/Downloads/AD-MDI version 1.2/Output/blinded_QueryMDI.txt", 
-                               "\t", escape_double = FALSE, trim_ws = TRUE, 
-                               skip = 1)
-blinded_QueryMDI$Pred_Error <- predict(fit, newdata = blinded_QueryMDI)
+# library(readxl)
+# test_AD <- read_excel("~/Downloads/AD-MDI version 1.2/Output/blinded_AD.xlsx")
+# names(test_AD)[3] = "Pred_Error"
+# 
+# fit <- lm(Pred_Error ~ MDI - 1, data = test_AD)
+# summary(fit)
+# plot(Pred_Error ~ MDI, data = test_AD)
+# 
+# library(readr)
+# blinded_QueryMDI <- read_delim("~/Downloads/AD-MDI version 1.2/Output/blinded_QueryMDI.txt", 
+#                                "\t", escape_double = FALSE, trim_ws = TRUE, 
+#                                skip = 1)
+# blinded_QueryMDI$Pred_Error <- predict(fit, newdata = blinded_QueryMDI)
 
