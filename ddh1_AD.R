@@ -21,7 +21,7 @@ test_moldesc <- moldesc[test_rows, model_vars]
 train_test_moldesc <- moldesc[train_test_rows, model_vars]
 blinded_moldesc <- moldesc[blinded_rows, model_vars]
 
-fit <- hotelling.test(train_test_moldesc, blinded_moldesc)
+fit <- hotelling.test(train_moldesc, blinded_moldesc)
 if (fit$pval > alpha) {
   print("H0: Blinded and Train mol samples have the same mean")
 } else {
@@ -62,8 +62,8 @@ h <- apply(desc, 1, FUN = function(x) {
   t(x) %*% X_sq_inv %*% x
 })
 
-in_AD_test_Leverage = which(h_test <= h_warn)
-out_AD_test_Leverage = which(h_test > h_warn)
+in_AD_Leverage_test = which(h_test <= h_warn)
+out_AD_Leverage_test = which(h_test > h_warn)
 
 in_AD_Leverage = which(h <= h_warn)
 out_AD_Leverage = which(h > h_warn)
@@ -91,18 +91,18 @@ probs_test <- multivariate_chebychev(train_moldesc, test_moldesc)
 probs_train_test <- multivariate_chebychev(train_test_moldesc, train_test_moldesc)
 probs <- multivariate_chebychev(train_moldesc, blinded_moldesc)
 
-in_AD_test_Chebychev <- which(probs_test >= min(probs_train) & probs_test <= max(probs_train))
-out_AD_test_Chebychev <- seq_along(probs_test)[-in_AD_Chebychev]
+in_AD_Chebychev_test <- which(probs_test >= min(probs_train) & probs_test <= max(probs_train))
+out_AD_Chebychev_test <- seq_along(probs_test)[-in_AD_Chebychev_test]
 
 in_AD_Chebychev <- which(probs >= min(probs_train) & probs <= max(probs_train))
 out_AD_Chebychev <- seq_along(probs)[-in_AD_Chebychev]
 
 # Tanimoto AD
 
-train_mols <- parse.smiles(smiles$SMILES[train_rows])
-test_mols <- parse.smiles(smiles$SMILES[test_rows])
-train_test_mols <- parse.smiles(smiles$SMILES[train_test_rows])
-blinded_mols <- parse.smiles(smiles$SMILES[blinded_rows])
+train_smiles <- parse.smiles(smiles$SMILES[train_rows])
+test_smiles <- parse.smiles(smiles$SMILES[test_rows])
+train_test_smiles <- parse.smiles(smiles$SMILES[train_test_rows])
+blinded_smiles <- parse.smiles(smiles$SMILES[blinded_rows])
 
 # 1-NN in Training based on Test pIC50 (activity)
 y_train <- smiles$pIC50[train_rows]
@@ -115,31 +115,61 @@ activ_1nn_sim <- sapply(seq_along(activ_1nn), FUN = function(i) {
 })
 
 # Best sig_type using RMSE between 1-NN Activity and 1-NN Tanimoto similarity on training set
+circular_types = c('ECFP0','ECFP2','ECFP4','ECFP6','FCFP0','FCFP2','FCFP4','FCFP6')
 sig_types = c('standard', 'extended', 'graph', 'hybridization', 
               'maccs', 'estate', 'pubchem', 'shortestpath', 
-              'circular', 'substructure')
+              'substructure', paste('circular', circular_types, sep = '.'))
 options("java.parameters"=c("-Xmx4000m"))
 rmse <- sapply(sig_types, FUN = function(sig_type) {
   
-  fps_train <- lapply(train_mols, get.fingerprint, type=sig_type)
-  fps_test <- lapply(test_mols, get.fingerprint, type=sig_type)
+  if (str_starts(sig_type, 'circular')) {
+    circ_type = strsplit(sig_type, '.', fixed = T)[[1]][2]
+    fps_train <- lapply(train_smiles, get.fingerprint, type='circular', circular.type=circ_type)
+    fps_test <- lapply(test_smiles, get.fingerprint, type='circular', circular.type=circ_type)
+  } else {
+    fps_train <- lapply(train_smiles, get.fingerprint, type=sig_type)
+    fps_test <- lapply(test_smiles, get.fingerprint, type=sig_type)
+  }
+  
   test_sim <- fingerprint::fp.sim.matrix(fps_train, fps_test, method='tanimoto')
   
   # 1-NN Tanimoto
   tanimoto_1nn <- apply(test_sim, 2, which.max)
-  tanimoto_1nn_sim <- sapply(seq_along(tanimoto_1nn), FUN = function(i) {
+  tanimoto_1nn_sim <- sapply(seq_along(tanimoto_1nn_test), FUN = function(col) {
+    test_sim[tanimoto_1nn[col], col]
+  })
+  
+  # Find the activity similarity based on 1-NN Tanimoto
+  tanimoto_1nn_activ_sim <- sapply(seq_along(tanimoto_1nn), FUN = function(i) {
     y <- y_test[i]
     row <- tanimoto_1nn[i]
     abs(y_train[row] - y)
   })
 
-  sqrt(mean((activ_1nn_sim - tanimoto_1nn_sim)^2))
-
+  # RMSE
+  # sqrt(mean(tanimoto_1nn_activ_sim^2))
+  cor(tanimoto_1nn_activ_sim, tanimoto_1nn_sim)
+  #sqrt(mean((activ_1nn_sim - tanimoto_1nn_activ_sim)^2))
 })
 
-sig_type = names(which.min(rmse))
-fps_train <- lapply(train_mols, get.fingerprint, type=sig_type)
-fps_blinded <- lapply(blinded_mols, get.fingerprint, type=sig_type)
+#sig_type = names(which.min(rmse))
+sig_type = 'maccs'
+if (str_starts(sig_type, 'circular')) {
+  circ_type = strsplit(sig_type, '.', fixed = T)[[1]][2]
+  fps_train <- lapply(train_smiles, get.fingerprint, type='circular', circular.type=circ_type)
+  fps_test <- lapply(test_smiles, get.fingerprint, type='circular', circular.type=circ_type)
+  fps_blinded <- lapply(blinded_smiles, get.fingerprint, type='circular', circular.type=circ_type)
+} else {
+  fps_train <- lapply(train_smiles, get.fingerprint, type=sig_type)
+  fps_test <- lapply(test_smiles, get.fingerprint, type=sig_type)
+  fps_blinded <- lapply(blinded_smiles, get.fingerprint, type=sig_type)
+}
+
+test_sim <- fingerprint::fp.sim.matrix(fps_train, fps_test, method='tanimoto')
+tanimoto_1nn_test <- apply(test_sim, 2, which.max)
+tanimoto_1nn_sim_test <- sapply(seq_along(tanimoto_1nn_test), FUN = function(col) {
+  test_sim[tanimoto_1nn_test[col], col]
+})
 
 blinded_sim <- fingerprint::fp.sim.matrix(fps_train, fps_blinded, method='tanimoto')
 tanimoto_1nn <- apply(blinded_sim, 2, which.max)
@@ -148,10 +178,15 @@ tanimoto_1nn_sim <- sapply(seq_along(tanimoto_1nn), FUN = function(col) {
 })
 
 sim_threshold <- 0.8
+in_AD_Tanimoto_test <- which(tanimoto_1nn_sim_test >= sim_threshold)
+out_AD_Tanimoto_test <- which(tanimoto_1nn_sim_test < sim_threshold)
 
 in_AD_Tanimoto <- which(tanimoto_1nn_sim >= sim_threshold)
 out_AD_Tanimoto <- which(tanimoto_1nn_sim < sim_threshold)
 
+out_AD_test <- Reduce(intersect, list(out_AD_Leverage_test, 
+                                      out_AD_Chebychev_test, 
+                                      out_AD_Tanimoto_test))
 out_AD <- Reduce(intersect, list(out_AD_Leverage, out_AD_Chebychev, out_AD_Tanimoto))
 
 

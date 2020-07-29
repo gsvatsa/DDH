@@ -137,7 +137,7 @@ tropsha_4 = (r_dash_sq-r0_dash_sq)/r_dash_sq
 tropsha_5 = abs(r0_sq - r0_dash_sq)
 
 print("Tropsha's Conditions:")
-print(paste("2: Q-squared (Training)=", q_sq_train,"> 0.5", q_sq_train > 0.5))
+print(paste("1: Q-squared (Training)=", q_sq_train,"> 0.5", q_sq_train > 0.5))
 print(paste("2: R-squared (Test)=", r_sq_test,"> 0.6", r_sq_test > 0.6))
 print(paste("3a: (r_sq-r0_sq)/r_sq =", tropsha_3, "< 0.1:", tropsha_3 < 0.1))
 print(paste("3b: k =", k, ", 0.85 <= k <= 1.15:", k >= 0.85 & k <= 1.15))
