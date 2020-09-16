@@ -64,7 +64,7 @@ get_model_diagnostics <- function(model, moldesc) {
   y_test = test_mols$pIC50
   cor(yhat_test, y_test)
   plot(y_test, yhat_test)
-  pred_test <- data.frame(y_test = y_test, yhat_test = yhat_test)
+  test_obs_pred <- data.frame(y_test = y_test, yhat_test = yhat_test)
   q_sq_ext = 1.0 - sum((y_test - yhat_test)^2)/sum((y_test - mean(y_train))^2)
   print(paste("Q2extF1 = ", q_sq_ext))
   
@@ -116,22 +116,49 @@ get_model_diagnostics <- function(model, moldesc) {
   return(c(rsq_train = rsq_train,
            see_train = see_train,
            q_sq_train = q_sq_train,
-           pred_test = pred_test,
+           test_obs_pred = test_obs_pred,
            q_sq_ext = q_sq_ext,
            mae_train = mae_train,
            mae_test = mae_test, 
            r_sq_test = r_sq_test,
            tropsha_3 = tropsha_3,
+           tropsha_k = k,
            tropsha_4 = tropsha_4,
+           tropsha_k_dash = k_dash,
            tropsha_5 = tropsha_5
   )
   )
 }
 
-desc_types <- c("blue","chemopy", "padel", "pybel", "rdkit")
+desc_types <- c("blue","chemopy", "padel", "pybel", "rdkit", "padel_rdkit", "all")
 
+padel <- read_csv(paste0("descriptors/", "padel_desc.csv"))
+rdkit <- read_csv(paste0("descriptors/", "rdkit_desc.csv"))
+padel_rdkit <- cbind(padel, rdkit)
+write_csv(padel_rdkit, "descriptors/padel_rdkit_desc.csv")
+
+files <- paste0("descriptors/", desc_types[1:5], "_desc.csv")
+all <- do.call("cbind", lapply(files, read_csv))
+write_csv(all, "descriptors/all_desc.csv")
+
+SMLR_path = "~/ddh/S-MLR 1.2_24March2017/"
+descs <- lapply(desc_types, FUN = function(desc_type) {
+  desc_file <- paste0(desc_type, "_desc.csv")
+  df <- read_csv(paste0("descriptors/", desc_file)) %>%
+    select(where(is.numeric)) %>%
+    mutate(id = 1:nrow(.)) %>%
+    relocate(id) %>%
+    mutate(pIC50 = smiles$pIC50[id]) %>%
+    relocate(pIC50, .after = last_col()) %>%
+    filter(!is.na(pIC50))
+  write_csv(df, path = paste0(SMLR_path, "data/", desc_file))
+  df
+})
+names(descs) <- desc_types
+
+# TODO: Run SMLR tool programmatically 
 SMLR_moldescs <- lapply(desc_types, FUN = function(desc_type) {
-  desc_file <- paste0("SMLR/", desc_type, "_SMLR.csv")
+  desc_file <- paste0(SMLR_path, "output/", desc_type, "_SMLR.csv")
   moldesc <- read_csv(desc_file)
 })
 names(SMLR_moldescs) <- desc_types
@@ -159,6 +186,45 @@ model_diags <- lapply(desc_types, FUN = function(desc_type) {
   get_model_diagnostics(model, moldesc)
 })
 names(model_diags) <- desc_types
+
+# XternalValidationPlus tool - for MAE-based criteria tool
+xvp_path <- "~/ddh/XternalValidationPlus_Updated13April16/"
+y_train <- smiles$pIC50[train_rows]
+mu_y_train <- mean(y_train)
+mu_y_train
+range_y_train <- diff(range(y_train))
+range_y_train
+lapply(desc_types, FUN = function(desc_type) {
+  diag <- model_diags[[desc_type]]
+  df <- data.frame(Yobs_test = diag$test_obs_pred.y_test,
+                   Ypred_test = diag$test_obs_pred.yhat_test)
+  write_csv(df, paste0(xvp_path, "/data/ytest_", desc_type, ".csv"))
+})
+
+# Select Desc Types based on DDH01 problem statement:
+# R2 > 0.7, LOO-Q2 > 0.7, Q2ext_F1 > 0.7, Tropsha’s criteria: Pass, 
+# MAE based criteria: Moderate or good
+library(readxl)
+qual_desc_types <- sapply(desc_types, FUN = function(desc_type) {
+  diag <- model_diags[[desc_type]]
+  
+  cond <- diag$rsq_train > 0.7 &&
+          diag$q_sq_train > 0.7 &&
+          diag$q_sq_ext > 0.7 &&
+          diag$r_sq_test > 0.6 &&
+          diag$tropsha_3 < 0.1 &&
+          (diag$tropsha_k >= 0.85 & diag$tropsha_k <= 1.15) &&
+          diag$tropsha_4 < 0.1 &
+          (diag$tropsha_k_dash >= 0.85 && diag$tropsha_k_dash <= 1.15) &&
+          diag$tropsha_5 < 0.3
+  #print(cond)
+  df <- read_excel(paste0(xvp_path, "/output/", desc_type, "_ExternalValidation.xls"))
+  mae_crit <- toupper(tail(df,1)[3]) != 'BAD'
+  #print(mae_crit)
+  
+  cond && mae_crit
+    
+})
 
 # Hotelling's Test and Leverage (h)
 # Pg.  37 (GUIDANCE DOCUMENT ON THE VALIDATION OF (QUANTITATIVE)STRUCTURE-ACTIVITY RELATIONSHIPS [(Q)SAR] MODELS)
@@ -246,8 +312,99 @@ Chebychev_AD <- function(train_moldesc, test_moldesc, blinded_moldesc) {
   return(list(in_AD_Chebychev_test, out_AD_Chebychev_test, in_AD_Chebychev, out_AD_Chebychev))
 }
 
+Tanimoto_AD <- function() {
+  # Tanimoto AD
+  
+  train_smiles <- parse.smiles(smiles$SMILES[train_rows])
+  test_smiles <- parse.smiles(smiles$SMILES[test_rows])
+  train_test_smiles <- parse.smiles(smiles$SMILES[train_test_rows])
+  blinded_smiles <- parse.smiles(smiles$SMILES[blinded_rows])
+  
+  # 1-NN in Training based on Test pIC50 (activity)
+  y_train <- smiles$pIC50[train_rows]
+  y_test <- smiles$pIC50[test_rows]
+  activ_1nn <- sapply(y_test, FUN = function(y) {which.min(abs(y_train - y))})
+  activ_1nn_sim <- sapply(seq_along(activ_1nn), FUN = function(i) {
+    y <- y_test[i]
+    row <- activ_1nn[i]
+    abs(y_train[row] - y)
+  })
+  
+  # Best sig_type using RMSE between 1-NN Activity and 1-NN Tanimoto similarity on training set
+  circular_types = c('ECFP0','ECFP2','ECFP4','ECFP6','FCFP0','FCFP2','FCFP4','FCFP6')
+  sig_types = c('standard', 'extended', 'graph', 'hybridization', 
+                'maccs', 'estate', 'pubchem', 'shortestpath', 
+                'substructure', paste('circular', circular_types, sep = '.'))
+  options("java.parameters"=c("-Xmx4000m"))
+  rmse <- sapply(sig_types, FUN = function(sig_type) {
+    
+    if (str_starts(sig_type, 'circular')) {
+      circ_type = strsplit(sig_type, '.', fixed = T)[[1]][2]
+      fps_train <- lapply(train_smiles, get.fingerprint, type='circular', circular.type=circ_type)
+      fps_test <- lapply(test_smiles, get.fingerprint, type='circular', circular.type=circ_type)
+    } else {
+      fps_train <- lapply(train_smiles, get.fingerprint, type=sig_type)
+      fps_test <- lapply(test_smiles, get.fingerprint, type=sig_type)
+    }
+    
+    test_sim <- fingerprint::fp.sim.matrix(fps_train, fps_test, method='tanimoto')
+    
+    # 1-NN Tanimoto
+    tanimoto_1nn <- apply(test_sim, 2, which.max)
+    tanimoto_1nn_sim <- sapply(seq_along(tanimoto_1nn_test), FUN = function(col) {
+      test_sim[tanimoto_1nn[col], col]
+    })
+    
+    # Find the activity similarity based on 1-NN Tanimoto
+    tanimoto_1nn_activ_sim <- sapply(seq_along(tanimoto_1nn), FUN = function(i) {
+      y <- y_test[i]
+      row <- tanimoto_1nn[i]
+      abs(y_train[row] - y)
+    })
+    
+    # RMSE
+    # sqrt(mean(tanimoto_1nn_activ_sim^2))
+    cor(tanimoto_1nn_activ_sim, tanimoto_1nn_sim)
+    #sqrt(mean((activ_1nn_sim - tanimoto_1nn_activ_sim)^2))
+  })
+  
+  #sig_type = names(which.min(rmse))
+  sig_type = 'maccs'
+  if (str_starts(sig_type, 'circular')) {
+    circ_type = strsplit(sig_type, '.', fixed = T)[[1]][2]
+    fps_train <- lapply(train_smiles, get.fingerprint, type='circular', circular.type=circ_type)
+    fps_test <- lapply(test_smiles, get.fingerprint, type='circular', circular.type=circ_type)
+    fps_blinded <- lapply(blinded_smiles, get.fingerprint, type='circular', circular.type=circ_type)
+  } else {
+    fps_train <- lapply(train_smiles, get.fingerprint, type=sig_type)
+    fps_test <- lapply(test_smiles, get.fingerprint, type=sig_type)
+    fps_blinded <- lapply(blinded_smiles, get.fingerprint, type=sig_type)
+  }
+  
+  test_sim <- fingerprint::fp.sim.matrix(fps_train, fps_test, method='tanimoto')
+  tanimoto_1nn_test <- apply(test_sim, 2, which.max)
+  tanimoto_1nn_sim_test <- sapply(seq_along(tanimoto_1nn_test), FUN = function(col) {
+    test_sim[tanimoto_1nn_test[col], col]
+  })
+  
+  blinded_sim <- fingerprint::fp.sim.matrix(fps_train, fps_blinded, method='tanimoto')
+  tanimoto_1nn <- apply(blinded_sim, 2, which.max)
+  tanimoto_1nn_sim <- sapply(seq_along(tanimoto_1nn), FUN = function(col) {
+    blinded_sim[tanimoto_1nn[col], col]
+  })
+  
+  sim_threshold <- 0.8
+  in_AD_Tanimoto_test <- which(tanimoto_1nn_sim_test >= sim_threshold)
+  out_AD_Tanimoto_test <- which(tanimoto_1nn_sim_test < sim_threshold)
+  
+  in_AD_Tanimoto <- which(tanimoto_1nn_sim >= sim_threshold)
+  out_AD_Tanimoto <- which(tanimoto_1nn_sim < sim_threshold)
+  
+  return(list(in_AD_Tanimoto_test, out_AD_Tanimoto_test, in_AD_Tanimoto, out_AD_Tanimoto))
+}
+
 desc_files <- c("blue_desc.csv", "chemopy_desc.csv", "padel_desc.csv", "pybel_desc.csv", "rdkit_desc.csv")
-ADs <- lapply(desc_types, FUN = function(desc_type) {
+AD <- lapply(desc_types, FUN = function(desc_type) {
   moldesc <- read_csv(paste0("descriptors/", desc_type, "_desc.csv")) 
   model <- models[[desc_type]]
   model_vars <- gsub('\`', '', variable.names(model)[-1])
@@ -264,7 +421,10 @@ ADs <- lapply(desc_types, FUN = function(desc_type) {
   
   chebychev_AD <- Chebychev_AD(train_moldesc, test_moldesc, blinded_moldesc)
   
-  
+  return(list(desc_type = desc_type,
+              hotelling_AD = hotelling_AD, 
+              leverage_AD = leverage_AD, 
+              chebychev_AD = chebychev_AD))
   
 })
 
