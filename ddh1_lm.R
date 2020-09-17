@@ -163,7 +163,7 @@ SMLR_moldescs <- lapply(desc_types, FUN = function(desc_type) {
 })
 names(SMLR_moldescs) <- desc_types
 
-models <- lapply(desc_types, FUN = function(desc_type) {
+SMLR_models <- lapply(desc_types, FUN = function(desc_type) {
   moldesc <- SMLR_moldescs[[desc_type]]
   
   # Fetch the SMLR-processed molecular descriptors with most sig variables
@@ -178,10 +178,10 @@ models <- lapply(desc_types, FUN = function(desc_type) {
   
   model <- slm
 })
-names(models) <- desc_types
+names(SMLR_models) <- desc_types
 
 model_diags <- lapply(desc_types, FUN = function(desc_type) {
-  model <- models[[desc_type]]
+  model <- SMLR_models[[desc_type]]
   moldesc <- SMLR_moldescs[[desc_type]]
   get_model_diagnostics(model, moldesc)
 })
@@ -205,7 +205,7 @@ lapply(desc_types, FUN = function(desc_type) {
 # R2 > 0.7, LOO-Q2 > 0.7, Q2ext_F1 > 0.7, Tropsha’s criteria: Pass, 
 # MAE based criteria: Moderate or good
 library(readxl)
-qual_desc_types <- sapply(desc_types, FUN = function(desc_type) {
+diag_flags <- sapply(desc_types, FUN = function(desc_type) {
   diag <- model_diags[[desc_type]]
   
   cond <- diag$rsq_train > 0.7 &&
@@ -226,6 +226,25 @@ qual_desc_types <- sapply(desc_types, FUN = function(desc_type) {
     
 })
 
+# Run a random forest on the predictions from the selected models
+get_ensemble_model <- function(sel_desc_types, moldescs, models) {
+  y_hats <- cbind(sapply(sel_desc_types, FUN = function(desc_type) {
+    moldesc <- moldescs[[desc_type]]
+    model <- models[[desc_type]]
+    
+    predict(model, newdata = moldesc)
+  }))
+  y_hats <- data.frame(y_hats)
+  y_hats$pIC50 <- smiles$pIC50[train_test_rows]
+  
+  rf_fit <- train(pIC50 ~ ., data = y_hats, method = "rf")
+}
+
+# Train the ensemble
+sel_desc_types <- desc_types[diag_flags]
+rf_fit <- get_ensemble_model(sel_desc_types, SMLR_moldescs, SMLR_models)
+y_pred <- predict(rf_fit)
+
 # Hotelling's Test and Leverage (h)
 # Pg.  37 (GUIDANCE DOCUMENT ON THE VALIDATION OF (QUANTITATIVE)STRUCTURE-ACTIVITY RELATIONSHIPS [(Q)SAR] MODELS)
 Hotelling_AD <- function(alpha, train_moldesc, blinded_moldesc) {
@@ -240,7 +259,7 @@ Hotelling_AD <- function(alpha, train_moldesc, blinded_moldesc) {
 }
 
 # Leverage and Williams Plot
-Leverage_AD <- function(model, train_moldesc, test_moldesc, blinded_moldesc) {
+Leverage_AD <- function(model, train_moldesc, test_moldesc, test_obs_type = 'S') {
   X <- as.matrix(train_moldesc)
   X_sq_inv <- Inverse(t(X) %*% X)
   
@@ -263,8 +282,9 @@ Leverage_AD <- function(model, train_moldesc, test_moldesc, blinded_moldesc) {
   
   pred_test <- predict(model, newdata = test_moldesc, se.fit = T)
   test_stdres <- pred_test$se.fit
-  w_test <- data.frame(stdres = test_stdres, h = h_test, class = "test")
-  rownames(w_test) <- paste("S",seq_along(h_test), sep="")
+  w_test <- data.frame(stdres = test_stdres, h = h_test, 
+                       class = ifelse(test_obs_type == 'S',"test", "blinded"))
+  rownames(w_test) <- paste(test_obs_type,seq_along(h_test), sep="")
   w <- rbind(w_train, w_test)
   
   print(ggplot(data = w, aes(x = h, y = stdres, shape = class, label = rownames(w))) +
@@ -274,15 +294,11 @@ Leverage_AD <- function(model, train_moldesc, test_moldesc, blinded_moldesc) {
     geom_hline(yintercept = mean(w_train$stdres) - 2*sd(w_train$stdres), color = "red") +
     geom_vline(xintercept = h_warn, color = "red")
   )
-  desc <- blinded_moldesc
-  h <- apply(desc, 1, FUN = function(x) {
-    t(x) %*% X_sq_inv %*% x
-  })
+
+  in_AD_Leverage = which(h_test <= h_warn)
+  out_AD_Leverage = which(h_test > h_warn)
   
-  in_AD_Leverage_test = which(h_test <= h_warn)
-  out_AD_Leverage_test = which(h_test > h_warn)
-  
-  return(list(in_AD_Leverage_test, out_AD_Leverage_test))
+  return(list(in_AD_Leverage, out_AD_Leverage))
 }
 
 # Multivariate Chebyshev Inequality with Estimated Mean and Variance by Stellato
@@ -298,18 +314,14 @@ multivariate_chebychev <- function(train_test_mols, ext_mols) {
   return(probs)
 }
 
-Chebychev_AD <- function(train_moldesc, test_moldesc, blinded_moldesc) {
+Chebychev_AD <- function(train_moldesc, test_moldesc) {
   probs_train <- multivariate_chebychev(train_moldesc, train_moldesc)
   probs_test <- multivariate_chebychev(train_moldesc, test_moldesc)
-  probs <- multivariate_chebychev(train_moldesc, blinded_moldesc)
   
-  in_AD_Chebychev_test <- which(probs_test >= min(probs_train) & probs_test <= max(probs_train))
-  out_AD_Chebychev_test <- seq_along(probs_test)[-in_AD_Chebychev_test]
+  in_AD_Chebychev <- which(probs_test >= min(probs_train) & probs_test <= max(probs_train))
+  out_AD_Chebychev <- seq_along(probs_test)[-in_AD_Chebychev]
   
-  in_AD_Chebychev <- which(probs >= min(probs_train) & probs <= max(probs_train))
-  out_AD_Chebychev <- seq_along(probs)[-in_AD_Chebychev]
-  
-  return(list(in_AD_Chebychev_test, out_AD_Chebychev_test, in_AD_Chebychev, out_AD_Chebychev))
+  return(list(in_AD_Chebychev, out_AD_Chebychev))
 }
 
 Tanimoto_AD <- function() {
@@ -403,10 +415,38 @@ Tanimoto_AD <- function() {
   return(list(in_AD_Tanimoto_test, out_AD_Tanimoto_test, in_AD_Tanimoto, out_AD_Tanimoto))
 }
 
-desc_files <- c("blue_desc.csv", "chemopy_desc.csv", "padel_desc.csv", "pybel_desc.csv", "rdkit_desc.csv")
-AD <- lapply(desc_types, FUN = function(desc_type) {
+ADS_path <- "~/ddh/ADUsingStdApproach 1.0_20Nov2019/"
+Standardization_AD <- function(desc_type, train_moldesc, test_moldesc, type = "test") {
+  
+  train_moldesc %>%
+    mutate(id = 1: nrow(.)) %>%
+    relocate(id) %>%
+    write_csv(path = paste0(ADS_path, "data/", desc_type, "_train.csv"))
+  
+  test_moldesc %>%
+    mutate(id = 1: nrow(.)) %>%
+    relocate(id) %>%
+    write_csv(path = paste0(ADS_path, "data/", desc_type, "_", type, ".csv"))
+  
+  # Run the jar manually
+  
+  AD_Standardization <- 
+    read_csv(paste0(ADS_path, "output/", desc_type,"_", type, "_Test_AD.csv")) %>%
+    select(last_col()) 
+  
+  out_AD_Standardization = which(AD_Standardization == "Outside AD")
+  in_AD_Standardization = which(AD_Standardization != "Outside AD")
+  
+  return(list(in_AD_Standardization, out_AD_Standardization))
+  
+}
+
+
+# Finally !
+sel_desc_types <- desc_types[pass_flags]
+AD_preds <- lapply(sel_desc_types, FUN = function(desc_type) {
   moldesc <- read_csv(paste0("descriptors/", desc_type, "_desc.csv")) 
-  model <- models[[desc_type]]
+  model <- SMLR_models[[desc_type]]
   model_vars <- gsub('\`', '', variable.names(model)[-1])
   
   train_moldesc <- moldesc[train_rows, model_vars]
@@ -417,16 +457,54 @@ AD <- lapply(desc_types, FUN = function(desc_type) {
   alpha = 0.05
   hotelling_AD <- Hotelling_AD(alpha, train_moldesc, blinded_moldesc)
   
-  leverage_AD <- Leverage_AD(model, train_moldesc, test_moldesc, blinded_moldesc)
+  AD_Leverage_test <- Leverage_AD(model, train_moldesc, test_moldesc)
+  AD_Leverage_blinded <- Leverage_AD(model, train_moldesc, blinded_moldesc, 'B')
   
-  chebychev_AD <- Chebychev_AD(train_moldesc, test_moldesc, blinded_moldesc)
+  AD_Chebychev_test <- Chebychev_AD(train_moldesc, test_moldesc)
+  AD_Chebychev_blinded <- Chebychev_AD(train_moldesc, blinded_moldesc)
   
-  return(list(desc_type = desc_type,
-              hotelling_AD = hotelling_AD, 
-              leverage_AD = leverage_AD, 
-              chebychev_AD = chebychev_AD))
+  AD_Standardization_test <- Standardization_AD(desc_type, 
+                                           train_test_moldesc, 
+                                           test_moldesc)
+  AD_Standardization_blinded <- Standardization_AD(desc_type, 
+                                                train_test_moldesc, 
+                                                blinded_moldesc,
+                                                type = "blinded")
+  
+  pred_blinded <- predict(model, newdata = blinded_moldesc)
+
+  return(list(pred_blinded = pred_blinded,
+              AD_Leverage_test = AD_Leverage_test,
+              AD_Leverage_blinded = AD_Leverage_blinded,
+              AD_Chebychev_test = AD_Chebychev_test,
+              AD_Chebychev_blinded = AD_Chebychev_blinded,
+              AD_Standardization_test = AD_Standardization_test,
+              AD_Standardization_blinded = AD_Standardization_blinded
+              )
+         )
   
 })
+names(AD_preds) <- sel_desc_types
+
+# Ensemble Blinded Predictions and AD Info
+preds_blinded <- cbind(sapply(sel_desc_types, FUN = function(desc_type) {
+  AD_preds[[desc_type]][["pred_blinded"]]
+}))
+pred_blinded_ensemble <- predict(rf_fit, newdata = preds_blinded) 
+
+out_AD_blinded <- Reduce("intersect", lapply(sel_desc_types, FUN = function(desc_type) {
+  AD <- AD_preds[[desc_type]]
+  out_AD_Leverage_blinded <- AD[["AD_Leverage_blinded"]][[2]]
+  out_AD_Chebychev_blinded <- AD[["AD_Chebychev_blinded"]][[2]]
+  out_AD_Standardization_blinded <- AD[["AD_Standardization_blinded"]][[2]]
+  
+  Reduce("union", list(out_AD_Leverage_blinded,
+                       out_AD_Chebychev_blinded,
+                       out_AD_Standardization_blinded
+  ))
+                          
+}))
+
 
 
 
