@@ -15,6 +15,57 @@ set.seed(1024)
 test_rows = sample(train_test_rows, 0.3*floor(length(train_test_rows)))
 train_rows = setdiff(train_test_rows, test_rows)
 
+
+desc_types <- c("blue","chemopy", "padel", "pybel", "rdkit", "padel_rdkit", "all")
+
+padel <- read_csv(paste0("descriptors/", "padel_desc.csv"))
+rdkit <- read_csv(paste0("descriptors/", "rdkit_desc.csv"))
+padel_rdkit <- cbind(padel, rdkit)
+write_csv(padel_rdkit, "descriptors/padel_rdkit_desc.csv")
+
+files <- paste0("descriptors/", desc_types[1:5], "_desc.csv")
+all <- do.call("cbind", lapply(files, read_csv))
+write_csv(all, "descriptors/all_desc.csv")
+
+SMLR_path = "~/ddh/S-MLR 1.2_24March2017/"
+descs <- lapply(desc_types, FUN = function(desc_type) {
+  desc_file <- paste0(desc_type, "_desc.csv")
+  df <- read_csv(paste0("descriptors/", desc_file)) %>%
+    select(where(is.numeric)) %>%
+    mutate(id = 1:nrow(.)) %>%
+    relocate(id) %>%
+    mutate(pIC50 = smiles$pIC50[id]) %>%
+    relocate(pIC50, .after = last_col()) %>%
+    filter(!is.na(pIC50))
+  write_csv(df, path = paste0(SMLR_path, "data/", desc_file))
+  df
+})
+names(descs) <- desc_types
+
+# TODO: Run SMLR tool programmatically 
+SMLR_moldescs <- lapply(desc_types, FUN = function(desc_type) {
+  desc_file <- paste0(SMLR_path, "output/", desc_type, "_SMLR.csv")
+  moldesc <- read_csv(desc_file)
+})
+names(SMLR_moldescs) <- desc_types
+
+SMLR_models <- lapply(desc_types, FUN = function(desc_type) {
+  moldesc <- SMLR_moldescs[[desc_type]]
+  
+  # Fetch the SMLR-processed molecular descriptors with most sig variables
+  train_mols <- moldesc %>%
+    filter(id %in% train_rows) %>%
+    select(!c(id))
+
+  # Step-wise regression model
+  lm <- lm(pIC50 ~ ., data = train_mols)
+  slm <- step(lm)
+  summary(slm)
+  
+  model <- slm
+})
+names(SMLR_models) <- desc_types
+
 get_model_diagnostics <- function(model, moldesc) {
   
   # Model Diagnostics
@@ -82,8 +133,8 @@ get_model_diagnostics <- function(model, moldesc) {
   y <- moldesc$pIC50
   y_pred <- predict(model, newdata = moldesc)
   
-  k = sum(y * y_pred)/sum(y_pred^2)
-  k_dash = sum(y * y_pred)/sum(y^2)
+  tropsha_k = sum(y * y_pred)/sum(y_pred^2)
+  tropsha_k_dash = sum(y * y_pred)/sum(y^2)
   
   lm_obs_pred <- lm(y ~ y_pred)
   summary(lm_obs_pred)
@@ -107,11 +158,21 @@ get_model_diagnostics <- function(model, moldesc) {
   print(paste("1: Q-squared (Training)=", q_sq_train,"> 0.5", q_sq_train > 0.5))
   print(paste("2: R-squared (Test)=", r_sq_test,"> 0.6", r_sq_test > 0.6))
   print(paste("3a: (r_sq-r0_sq)/r_sq =", tropsha_3, "< 0.1:", tropsha_3 < 0.1))
-  print(paste("3b: k =", k, ", 0.85 <= k <= 1.15:", k >= 0.85 & k <= 1.15))
+  print(paste("3b: k =", tropsha_k, ", 0.85 <= k <= 1.15:", tropsha_k >= 0.85 & tropsha_k <= 1.15))
   print(paste("4a: (r\'_sq-r0\'_sq)/r\'_sq =", tropsha_4, "< 0.1:", tropsha_4 < 0.1))
-  print(paste("4b: k\' =", k_dash, ", 0.85 <= k\' <= 1.15:", k_dash >= 0.85 & k_dash <= 1.15))
+  print(paste("4b: k\' =", tropsha_k_dash, ", 0.85 <= k\' <= 1.15:", tropsha_k_dash >= 0.85 & tropsha_k_dash <= 1.15))
   print(paste("5: |r0_sq - r0\'_sq| =", tropsha_5, " < 0.3:", tropsha_5 < 0.3))
   
+  tropsha_cond <- tropsha_3 < 0.1 &&
+    (tropsha_k >= 0.85 & tropsha_k <= 1.15) &&
+    tropsha_4 < 0.1 &
+    (tropsha_k_dash >= 0.85 && tropsha_k_dash <= 1.15) &&
+    tropsha_5 < 0.3
+  
+  fit_conds <- rsq_train > 0.7 &&
+    q_sq_train > 0.7 &&
+    q_sq_ext > 0.7 &&
+    r_sq_test > 0.6
   
   return(c(rsq_train = rsq_train,
            see_train = see_train,
@@ -122,63 +183,15 @@ get_model_diagnostics <- function(model, moldesc) {
            mae_test = mae_test, 
            r_sq_test = r_sq_test,
            tropsha_3 = tropsha_3,
-           tropsha_k = k,
+           tropsha_k = tropsha_k,
            tropsha_4 = tropsha_4,
-           tropsha_k_dash = k_dash,
-           tropsha_5 = tropsha_5
+           tropsha_k_dash = tropsha_k_dash,
+           tropsha_5 = tropsha_5,
+           tropsha_cond = tropsha_cond,
+           fit_conds = fit_conds
   )
   )
 }
-
-desc_types <- c("blue","chemopy", "padel", "pybel", "rdkit", "padel_rdkit", "all")
-
-padel <- read_csv(paste0("descriptors/", "padel_desc.csv"))
-rdkit <- read_csv(paste0("descriptors/", "rdkit_desc.csv"))
-padel_rdkit <- cbind(padel, rdkit)
-write_csv(padel_rdkit, "descriptors/padel_rdkit_desc.csv")
-
-files <- paste0("descriptors/", desc_types[1:5], "_desc.csv")
-all <- do.call("cbind", lapply(files, read_csv))
-write_csv(all, "descriptors/all_desc.csv")
-
-SMLR_path = "~/ddh/S-MLR 1.2_24March2017/"
-descs <- lapply(desc_types, FUN = function(desc_type) {
-  desc_file <- paste0(desc_type, "_desc.csv")
-  df <- read_csv(paste0("descriptors/", desc_file)) %>%
-    select(where(is.numeric)) %>%
-    mutate(id = 1:nrow(.)) %>%
-    relocate(id) %>%
-    mutate(pIC50 = smiles$pIC50[id]) %>%
-    relocate(pIC50, .after = last_col()) %>%
-    filter(!is.na(pIC50))
-  write_csv(df, path = paste0(SMLR_path, "data/", desc_file))
-  df
-})
-names(descs) <- desc_types
-
-# TODO: Run SMLR tool programmatically 
-SMLR_moldescs <- lapply(desc_types, FUN = function(desc_type) {
-  desc_file <- paste0(SMLR_path, "output/", desc_type, "_SMLR.csv")
-  moldesc <- read_csv(desc_file)
-})
-names(SMLR_moldescs) <- desc_types
-
-SMLR_models <- lapply(desc_types, FUN = function(desc_type) {
-  moldesc <- SMLR_moldescs[[desc_type]]
-  
-  # Fetch the SMLR-processed molecular descriptors with most sig variables
-  train_mols <- moldesc %>%
-    filter(id %in% train_rows) %>%
-    select(!c(id))
-
-  # Step-wise regression model
-  lm <- lm(pIC50 ~ ., data = train_mols)
-  slm <- step(lm)
-  summary(slm)
-  
-  model <- slm
-})
-names(SMLR_models) <- desc_types
 
 model_diags <- lapply(desc_types, FUN = function(desc_type) {
   model <- SMLR_models[[desc_type]]
@@ -201,30 +214,28 @@ lapply(desc_types, FUN = function(desc_type) {
   write_csv(df, paste0(xvp_path, "/data/ytest_", desc_type, ".csv"))
 })
 
+library(readxl)
+mae_crits <- sapply(desc_types, FUN = function(desc_type) {
+  df <- read_excel(paste0(xvp_path, "/output/", desc_type, "_ExternalValidation.xls"))
+  mae_crit <- toupper(tail(df,1)[3])
+})
+
+
 # Select Desc Types based on DDH01 problem statement:
 # R2 > 0.7, LOO-Q2 > 0.7, Q2ext_F1 > 0.7, Tropsha’s criteria: Pass, 
 # MAE based criteria: Moderate or good
-library(readxl)
 diag_flags <- sapply(desc_types, FUN = function(desc_type) {
   diag <- model_diags[[desc_type]]
   
-  cond <- diag$rsq_train > 0.7 &&
-          diag$q_sq_train > 0.7 &&
-          diag$q_sq_ext > 0.7 &&
-          diag$r_sq_test > 0.6 &&
-          diag$tropsha_3 < 0.1 &&
-          (diag$tropsha_k >= 0.85 & diag$tropsha_k <= 1.15) &&
-          diag$tropsha_4 < 0.1 &
-          (diag$tropsha_k_dash >= 0.85 && diag$tropsha_k_dash <= 1.15) &&
-          diag$tropsha_5 < 0.3
-  #print(cond)
-  df <- read_excel(paste0(xvp_path, "/output/", desc_type, "_ExternalValidation.xls"))
-  mae_crit <- toupper(tail(df,1)[3]) != 'BAD'
-  #print(mae_crit)
+  mae_crit <- mae_crits[desc_type]
+  mae_cond <- mae_crit != 'BAD'
   
-  cond && mae_crit
+  diag[["fit_conds"]] && diag[["tropsha_cond"]] && mae_cond
     
 })
+
+# Choose the desc types that passed all the criteria
+sel_desc_types <- desc_types[diag_flags]
 
 # Run a random forest on the predictions from the selected models
 get_ensemble_model <- function(sel_desc_types, moldescs, models) {
@@ -240,10 +251,13 @@ get_ensemble_model <- function(sel_desc_types, moldescs, models) {
   rf_fit <- train(pIC50 ~ ., data = y_hats, method = "rf")
 }
 
+
 # Train the ensemble
-sel_desc_types <- desc_types[diag_flags]
+
 rf_fit <- get_ensemble_model(sel_desc_types, SMLR_moldescs, SMLR_models)
 y_pred <- predict(rf_fit)
+
+
 
 # Hotelling's Test and Leverage (h)
 # Pg.  37 (GUIDANCE DOCUMENT ON THE VALIDATION OF (QUANTITATIVE)STRUCTURE-ACTIVITY RELATIONSHIPS [(Q)SAR] MODELS)
@@ -492,6 +506,7 @@ preds_blinded <- cbind(sapply(sel_desc_types, FUN = function(desc_type) {
 }))
 pred_blinded_ensemble <- predict(rf_fit, newdata = preds_blinded) 
 
+# Ensemble Blinded AD Information
 out_AD_blinded <- Reduce("intersect", lapply(sel_desc_types, FUN = function(desc_type) {
   AD <- AD_preds[[desc_type]]
   out_AD_Leverage_blinded <- AD[["AD_Leverage_blinded"]][[2]]
@@ -502,10 +517,105 @@ out_AD_blinded <- Reduce("intersect", lapply(sel_desc_types, FUN = function(desc
                        out_AD_Chebychev_blinded,
                        out_AD_Standardization_blinded
   ))
-                          
 }))
 
+# Ensemble Test AD Information
+out_AD_test <- Reduce("intersect", lapply(sel_desc_types, FUN = function(desc_type) {
+  AD <- AD_preds[[desc_type]]
+  out_AD_Leverage_test <- AD[["AD_Leverage_test"]][[2]]
+  out_AD_Chebychev_test <- AD[["AD_Chebychev_test"]][[2]]
+  out_AD_Standardization_test <- AD[["AD_Standardization_test"]][[2]]
+  
+  Reduce("union", list(out_AD_Leverage_test,
+                       out_AD_Chebychev_test,
+                       out_AD_Standardization_test
+  ))
+}))
 
+# Write predictions and AD information to CSV files
+
+# DDT Input Form 2
+preds_df <- 
+  data.frame(id = blinded_rows, pIC50_pred = pred_blinded_ensemble) %>%
+  mutate(AD = if_else(id %in% blinded_rows[out_AD_blinded], "Outside AD", "-")) %>%
+  write_csv("results/Input Form 2_DDT1-01.csv")
+
+# DDT Input Form 1
+sapply(sel_desc_types, FUN = function(desc_type) {
+  model <- SMLR_models[[desc_type]]
+  model_vars <- names(coef(model))[-1]
+  diag <- model_diags[[desc_type]]
+  
+  csv_file <- paste0("results/Input Form 1_DDT1-01_", desc_type, ".csv")
+  
+  df <- 
+    data.frame(diag = c("DDT1-01",
+                        diag$rsq_train,
+                        diag$see_train,
+                        diag$q_sq_train,
+                        diag$mae_train,
+                        diag$q_sq_ext,
+                        diag$mae_test,
+                        ifelse(diag$tropsha_cond, "Yes", "No"),
+                        mae_crits[desc_type],
+                        paste(train_rows[out_AD_test])
+                        )
+    ) %>%
+    write_excel_csv(csv_file)
+  
+  # Insert empty row
+  write_excel_csv(data.frame(c(NA, "Training Set")), csv_file, na = "", append = T)
+  
+  moldesc <- SMLR_moldescs[[desc_type]] 
+  train_moldesc <- 
+    moldesc %>% 
+    filter(id %in% train_rows) %>%
+    select(append(model_vars, c("id", "pIC50"))) %>%
+    relocate(id) %>%
+    relocate(pIC50, .after = last_col()) %>%
+    mutate(pIC50pred = predict(model, newdata = .)) %>%
+    write_excel_csv(csv_file, append = T, col_names = T)
+  
+  # Insert empty row
+  write_excel_csv(data.frame(c(NA, "Test Set")), csv_file, na = "", append = T)
+  
+  test_moldesc <- 
+    moldesc %>% 
+    filter(id %in% test_rows) %>%
+    select(append(model_vars, c("id", "pIC50"))) %>%
+    relocate(id) %>%
+    relocate(pIC50, .after = last_col()) %>%
+    mutate(pIC50pred = predict(model, newdata = .)) %>%
+    write_excel_csv(csv_file, append = T, col_names = T)
+  
+  
+})
+
+
+# Sanity check using MACCS molecular fingerprint
+library(rcdk)
+train_smiles <- parse.smiles(smiles$SMILES[train_rows])
+test_smiles <- parse.smiles(smiles$SMILES[test_rows])
+train_test_smiles <- parse.smiles(smiles$SMILES[train_test_rows])
+blinded_smiles <- parse.smiles(smiles$SMILES[blinded_rows])
+
+sig_type = 'maccs'
+fps_train <- lapply(train_smiles, get.fingerprint, type=sig_type)
+fps_test <- lapply(test_smiles, get.fingerprint, type=sig_type)
+fps_blinded <- lapply(blinded_smiles, get.fingerprint, type=sig_type)
+
+blinded_sim <- fingerprint::fp.sim.matrix(fps_train, fps_blinded, method='tanimoto')
+tanimoto_1nn <- apply(blinded_sim, 2, which.max)
+pIC50_1nn <- smiles$pIC50[train_rows[tanimoto_1nn]]
+tanimoto_1nn_sim <- sapply(seq_along(tanimoto_1nn), FUN = function(col) {
+  blinded_sim[tanimoto_1nn[col], col]
+})
+df <- data.frame(yhat = pred_blinded_ensemble, y = pIC50_1nn, sim = tanimoto_1nn_sim)
+df$yerr <- df$y - df$yhat
+
+ggplot(df, aes(yhat, y)) +
+  geom_point(aes(size = sim)) +
+  geom_label(aes(label = paste0('B', 1:nrow(df))), nudge_y = 0.25)
 
 
 
