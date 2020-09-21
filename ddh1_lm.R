@@ -30,7 +30,8 @@ write_csv(all, "descriptors/all_desc.csv")
 SMLR_path = "~/ddh/S-MLR 1.2_24March2017/"
 descs <- lapply(desc_types, FUN = function(desc_type) {
   desc_file <- paste0(desc_type, "_desc.csv")
-  df <- read_csv(paste0("descriptors/", desc_file)) %>%
+  df <- 
+    read_csv(paste0("descriptors/", desc_file)) %>%
     select(where(is.numeric)) %>%
     mutate(id = 1:nrow(.)) %>%
     relocate(id) %>%
@@ -238,6 +239,7 @@ diag_flags <- sapply(desc_types, FUN = function(desc_type) {
 sel_desc_types <- desc_types[diag_flags]
 
 # Run a random forest on the predictions from the selected models
+library(caret)
 get_ensemble_model <- function(sel_desc_types, moldescs, models) {
   y_hats <- cbind(sapply(sel_desc_types, FUN = function(desc_type) {
     moldesc <- moldescs[[desc_type]]
@@ -246,14 +248,13 @@ get_ensemble_model <- function(sel_desc_types, moldescs, models) {
     predict(model, newdata = moldesc)
   }))
   y_hats <- data.frame(y_hats)
+  print(y_hats)
   y_hats$pIC50 <- smiles$pIC50[train_test_rows]
   
-  rf_fit <- train(pIC50 ~ ., data = y_hats, method = "rf")
+  rf_fit <- train(pIC50 ~ ., data = y_hats, method = "rf", metric = "RMSE")
 }
 
-
 # Train the ensemble
-
 rf_fit <- get_ensemble_model(sel_desc_types, SMLR_moldescs, SMLR_models)
 y_pred <- predict(rf_fit)
 
@@ -273,7 +274,7 @@ Hotelling_AD <- function(alpha, train_moldesc, blinded_moldesc) {
 }
 
 # Leverage and Williams Plot
-Leverage_AD <- function(model, train_moldesc, test_moldesc, test_obs_type = 'S') {
+Leverage_AD <- function(model, train_moldesc, test_moldesc, type, plot_train = TRUE) {
   X <- as.matrix(train_moldesc)
   X_sq_inv <- Inverse(t(X) %*% X)
   
@@ -296,10 +297,17 @@ Leverage_AD <- function(model, train_moldesc, test_moldesc, test_obs_type = 'S')
   
   pred_test <- predict(model, newdata = test_moldesc, se.fit = T)
   test_stdres <- pred_test$se.fit
-  w_test <- data.frame(stdres = test_stdres, h = h_test, 
-                       class = ifelse(test_obs_type == 'S',"test", "blinded"))
+  w_test <- data.frame(stdres = test_stdres, h = h_test, class = type)
+  test_obs_type = switch(type,
+                         test = 'S',
+                         blinded = 'B',
+                         cas = 'C')
   rownames(w_test) <- paste(test_obs_type,seq_along(h_test), sep="")
-  w <- rbind(w_train, w_test)
+  if (plot_train) {
+    w <- rbind(w_train, w_test)
+  } else {
+    w <- w_test
+  }
   
   print(ggplot(data = w, aes(x = h, y = stdres, shape = class, label = rownames(w))) +
     geom_point() +
@@ -455,9 +463,9 @@ Standardization_AD <- function(desc_type, train_moldesc, test_moldesc, type = "t
   
 }
 
-
 # Finally !
 sel_desc_types <- desc_types[pass_flags]
+
 AD_preds <- lapply(sel_desc_types, FUN = function(desc_type) {
   moldesc <- read_csv(paste0("descriptors/", desc_type, "_desc.csv")) 
   model <- SMLR_models[[desc_type]]
@@ -471,15 +479,16 @@ AD_preds <- lapply(sel_desc_types, FUN = function(desc_type) {
   alpha = 0.05
   hotelling_AD <- Hotelling_AD(alpha, train_moldesc, blinded_moldesc)
   
-  AD_Leverage_test <- Leverage_AD(model, train_moldesc, test_moldesc)
-  AD_Leverage_blinded <- Leverage_AD(model, train_moldesc, blinded_moldesc, 'B')
+  AD_Leverage_test <- Leverage_AD(model, train_moldesc, test_moldesc, type = "test")
+  AD_Leverage_blinded <- Leverage_AD(model, train_moldesc, blinded_moldesc, type = "blinded")
   
   AD_Chebychev_test <- Chebychev_AD(train_moldesc, test_moldesc)
   AD_Chebychev_blinded <- Chebychev_AD(train_moldesc, blinded_moldesc)
   
   AD_Standardization_test <- Standardization_AD(desc_type, 
                                            train_test_moldesc, 
-                                           test_moldesc)
+                                           test_moldesc,
+                                           type = "test")
   AD_Standardization_blinded <- Standardization_AD(desc_type, 
                                                 train_test_moldesc, 
                                                 blinded_moldesc,
@@ -501,6 +510,15 @@ AD_preds <- lapply(sel_desc_types, FUN = function(desc_type) {
 names(AD_preds) <- sel_desc_types
 
 # Ensemble Blinded Predictions and AD Info
+ensemble_predict <- function(models, desc_files) {
+  preds <- mapply(FUN = function(model, desc_file) {
+    read_csv(desc_file) %>%
+      predict(model, newdata = .)
+  }, models, desc_files)
+  predict(rf_fit, newdata = preds)
+}
+
+#preds_blinded <- mapply(predict, models[sel_desc_types], descs[sel_desc_types][blinded_rows])
 preds_blinded <- cbind(sapply(sel_desc_types, FUN = function(desc_type) {
   AD_preds[[desc_type]][["pred_blinded"]]
 }))
@@ -538,7 +556,7 @@ out_AD_test <- Reduce("intersect", lapply(sel_desc_types, FUN = function(desc_ty
 preds_df <- 
   data.frame(id = blinded_rows, pIC50_pred = pred_blinded_ensemble) %>%
   mutate(AD = if_else(id %in% blinded_rows[out_AD_blinded], "Outside AD", "-")) %>%
-  write_csv("results/Input Form 2_DDT1-01.csv")
+  write_excel_csv("results/Input Form 2_DDT1-01.csv")
 
 # DDT Input Form 1
 sapply(sel_desc_types, FUN = function(desc_type) {
