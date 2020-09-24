@@ -59,7 +59,7 @@ SMLR_models <- lapply(desc_types, FUN = function(desc_type) {
     select(!c(id))
 
   # Step-wise regression model
-  lm <- lm(pIC50 ~ ., data = train_mols)
+  lm <- lm(pIC50 ~ ., data = train_mols, na.action = "na.fail")
   slm <- step(lm)
   summary(slm)
   
@@ -437,20 +437,21 @@ Tanimoto_AD <- function() {
   return(list(in_AD_Tanimoto_test, out_AD_Tanimoto_test, in_AD_Tanimoto, out_AD_Tanimoto))
 }
 
-ADS_path <- "~/ddh/ADUsingStdApproach 1.0_20Nov2019/"
+ADS_path <- "~/ddh/ADUsingStdApproach/"
 Standardization_AD <- function(desc_type, train_moldesc, test_moldesc, type = "test") {
   
   train_moldesc %>%
     mutate(id = 1: nrow(.)) %>%
     relocate(id) %>%
-    write_csv(path = paste0(ADS_path, "data/", desc_type, "_train.csv"))
+    write_excel_csv(path = paste0(ADS_path, "data/", desc_type, "_train.csv"), na = "")
   
   test_moldesc %>%
     mutate(id = 1: nrow(.)) %>%
     relocate(id) %>%
-    write_csv(path = paste0(ADS_path, "data/", desc_type, "_", type, ".csv"))
+    write_excel_csv(path = paste0(ADS_path, "data/", desc_type, "_", type, ".csv"), na ="")
   
   # Run the jar manually
+  system(paste("java -Xmx4000m -jar", paste0(ADS_path, "ADUsingStdApproach.jar")))
   
   AD_Standardization <- 
     read_csv(paste0(ADS_path, "output/", desc_type,"_", type, "_Test_AD.csv")) %>%
