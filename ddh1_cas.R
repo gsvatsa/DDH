@@ -24,10 +24,12 @@ if (!file.exists(cas_smiles_file)) {
 cas_padel <- 
   read_csv("cas_padel2.zip") %>% 
   mutate(CAS_ID = row_number()) %>%
-  filter_all(all_vars(!is.infinite(.) & !is.na(.)))
+  filter_all(all_vars(!is.infinite(.) & !is.na(.))) #%>%
+  #predict(scalers[["padel"]], newdata = .)
 
-df1 <- data.frame(CAS_ID = cas_padel$CAS_ID)
-df1$padel = predict(models[["padel"]], newdata = cas_padel)
+df1 <- data.frame(CAS_ID = cas_padel$CAS_ID) 
+df1$padel = predict(models[["padel"]], 
+                    newdata = predict(scalers[["padel"]], cas_padel))
 
 cas_rdkit <- 
   read_tsv("cas_rdkit.tsv") %>% 
@@ -36,7 +38,8 @@ cas_rdkit <-
 
 cas_padel_rdkit <- inner_join(cas_padel, cas_rdkit, by="CAS_ID") 
 df2 <- data.frame(CAS_ID = cas_padel_rdkit$CAS_ID)
-df2$padel_rdkit <- predict(models[["padel_rdkit"]], newdata = cas_padel_rdkit)
+df2$padel_rdkit <- predict(models[["padel_rdkit"]], 
+                           newdata = predict(scalers[["padel_rdkit"]], cas_padel_rdkit))
 
 # CAS Predictions
 # preds_cas_ensemble <- predict(rf_fit, 
@@ -56,10 +59,16 @@ cas_AD_Infos <- lapply(sel_desc_types, FUN = function(desc_type) {
   moldesc <- read_csv(paste0("descriptors/", desc_type, "_desc.csv")) 
   model <- SMLR_models[[desc_type]]
   model_vars <- gsub('\`', '', variable.names(model)[-1])
+  scaler <- scalers[[desc_type]]
   
-  train_moldesc <- moldesc[train_rows, model_vars]
-  train_test_moldesc <- moldesc[train_test_rows, model_vars]
-  cas_moldesc <- cas_moldescs[[desc_type]][, model_vars] 
+  train_moldesc <- 
+    moldesc[train_rows,] %>% 
+    predict(scaler, newdata = .) %>%
+    select(all_of(model_vars))
+  cas_moldesc <- 
+    cas_moldescs[[desc_type]] %>%
+    predict(scaler, newdata = .) %>%
+    select(all_of(model_vars))
   
   AD_Leverage_cas <- Leverage_AD(model, train_moldesc, cas_moldesc, 
                                  type = "cas", plot_train = F)

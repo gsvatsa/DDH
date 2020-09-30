@@ -50,13 +50,22 @@ SMLR_moldescs <- lapply(desc_types, FUN = function(desc_type) {
 })
 names(SMLR_moldescs) <- desc_types
 
+scalers <- lapply(desc_types, FUN = function(desc_type) {
+  SMLR_moldescs[[desc_type]] %>%
+    select(!c(id, pIC50)) %>%
+    preProcess(method = "range", rangeBounds = c(-1,1))
+})
+names(scalers) <- desc_types
+
 SMLR_models <- lapply(desc_types, FUN = function(desc_type) {
   moldesc <- SMLR_moldescs[[desc_type]]
+  scaler <- scalers[[desc_type]]
   
   # Fetch the SMLR-processed molecular descriptors with most sig variables
   train_mols <- moldesc %>%
     filter(id %in% train_rows) %>%
-    select(!c(id))
+    select(!c(id)) %>%
+    predict(scaler, newdata = .)
 
   # Step-wise regression model
   lm <- lm(pIC50 ~ ., data = train_mols, na.action = "na.fail")
@@ -67,7 +76,10 @@ SMLR_models <- lapply(desc_types, FUN = function(desc_type) {
 })
 names(SMLR_models) <- desc_types
 
-get_model_diagnostics <- function(model, moldesc) {
+get_model_diagnostics <- function(desc_type) {
+  model <- SMLR_models[[desc_type]]
+  moldesc <- SMLR_moldescs[[desc_type]]
+  scaler <- scalers[[desc_type]]
   
   # Model Diagnostics
   pval = 1
@@ -109,7 +121,9 @@ get_model_diagnostics <- function(model, moldesc) {
   # Q2 ext F1
   test_mols <- moldesc %>%
     filter(id %in% test_rows) %>%
-    select(!c(id))
+    select(!c(id)) %>%
+    predict(scaler, newdata = .)
+  
   pred_test <- predict(model, newdata = test_mols, se.fit = T)
   yhat_test <- pred_test$fit
   test_stdres <- pred_test$se.fit
@@ -132,7 +146,7 @@ get_model_diagnostics <- function(model, moldesc) {
   r_sq_test = 1 - sum((y_test - yhat_test)^2)/sum((y_test - mean(y_test))^2)
   
   y <- moldesc$pIC50
-  y_pred <- predict(model, newdata = moldesc)
+  y_pred <- predict(model, newdata = predict(scaler, moldesc))
   
   tropsha_k = sum(y * y_pred)/sum(y_pred^2)
   tropsha_k_dash = sum(y * y_pred)/sum(y^2)
@@ -195,29 +209,30 @@ get_model_diagnostics <- function(model, moldesc) {
 }
 
 model_diags <- lapply(desc_types, FUN = function(desc_type) {
-  model <- SMLR_models[[desc_type]]
-  moldesc <- SMLR_moldescs[[desc_type]]
-  get_model_diagnostics(model, moldesc)
+  get_model_diagnostics(desc_type)
 })
 names(model_diags) <- desc_types
 
 # XternalValidationPlus tool - for MAE-based criteria tool
-xvp_path <- "~/ddh/XternalValidationPlus_Updated13April16/"
+library(readxl)
+XVP_path <- "~/ddh/XternalValidationPlus_Updated13April16/"
 y_train <- smiles$pIC50[train_rows]
 mu_y_train <- mean(y_train)
 mu_y_train
 range_y_train <- diff(range(y_train))
 range_y_train
-lapply(desc_types, FUN = function(desc_type) {
+
+mae_crits <- sapply(desc_types, FUN = function(desc_type) {
+  print(desc_type)
   diag <- model_diags[[desc_type]]
   df <- data.frame(Yobs_test = diag$test_obs_pred.y_test,
                    Ypred_test = diag$test_obs_pred.yhat_test)
-  write_csv(df, paste0(xvp_path, "/data/ytest_", desc_type, ".csv"))
-})
-
-library(readxl)
-mae_crits <- sapply(desc_types, FUN = function(desc_type) {
-  df <- read_excel(paste0(xvp_path, "/output/", desc_type, "_ExternalValidation.xls"))
+  write_excel_csv(df, paste0(XVP_path, "/data/ytest_", desc_type, ".csv"))
+  
+  # Run the jar manually
+  system(paste("java -Xmx4000m -jar", paste0(XVP_path, "XternalValidationPlusUpdated.jar")))
+  
+  df <- read_excel(paste0(XVP_path, "/output/", desc_type, "_ExternalValidation.xls"))
   mae_crit <- toupper(tail(df,1)[3])
 })
 
@@ -244,8 +259,9 @@ get_ensemble_model <- function(sel_desc_types, moldescs, models) {
   y_hats <- cbind(sapply(sel_desc_types, FUN = function(desc_type) {
     moldesc <- moldescs[[desc_type]]
     model <- models[[desc_type]]
+    scaler <- scalers[[desc_type]]
     
-    predict(model, newdata = moldesc)
+    predict(model, newdata = predict(scaler, moldesc))
   }))
   y_hats <- data.frame(y_hats)
   print(y_hats)
@@ -439,7 +455,7 @@ Tanimoto_AD <- function() {
 
 ADS_path <- "~/ddh/ADUsingStdApproach/"
 Standardization_AD <- function(desc_type, train_moldesc, test_moldesc, type = "test") {
-  
+  print(desc_type)
   train_moldesc %>%
     mutate(id = 1: nrow(.)) %>%
     relocate(id) %>%
@@ -465,17 +481,26 @@ Standardization_AD <- function(desc_type, train_moldesc, test_moldesc, type = "t
 }
 
 # Finally !
-sel_desc_types <- desc_types[pass_flags]
+sel_desc_types <- desc_types[diag_flags]
 
 AD_preds <- lapply(sel_desc_types, FUN = function(desc_type) {
   moldesc <- read_csv(paste0("descriptors/", desc_type, "_desc.csv")) 
   model <- SMLR_models[[desc_type]]
   model_vars <- gsub('\`', '', variable.names(model)[-1])
+  scaler <- scalers[[desc_type]]
   
-  train_moldesc <- moldesc[train_rows, model_vars]
-  test_moldesc <- moldesc[test_rows, model_vars]
-  train_test_moldesc <- moldesc[train_test_rows, model_vars]
-  blinded_moldesc <- moldesc[blinded_rows, model_vars]
+  train_moldesc <- 
+    moldesc[train_rows,] %>% 
+    predict(scaler, newdata = .) %>%
+    select(all_of(model_vars))
+  test_moldesc <- 
+    moldesc[test_rows,] %>% 
+    predict(scaler, newdata = .) %>%
+    select(all_of(model_vars))
+  blinded_moldesc <- 
+    moldesc[blinded_rows,] %>% 
+    predict(scaler, newdata = .) %>%
+    select(all_of(model_vars))
   
   alpha = 0.05
   hotelling_AD <- Hotelling_AD(alpha, train_moldesc, blinded_moldesc)
@@ -487,11 +512,11 @@ AD_preds <- lapply(sel_desc_types, FUN = function(desc_type) {
   AD_Chebychev_blinded <- Chebychev_AD(train_moldesc, blinded_moldesc)
   
   AD_Standardization_test <- Standardization_AD(desc_type, 
-                                           train_test_moldesc, 
+                                           train_moldesc, 
                                            test_moldesc,
                                            type = "test")
   AD_Standardization_blinded <- Standardization_AD(desc_type, 
-                                                train_test_moldesc, 
+                                                train_moldesc, 
                                                 blinded_moldesc,
                                                 type = "blinded")
   
