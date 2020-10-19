@@ -27,8 +27,8 @@ files <- paste0("descriptors/", desc_types[1:5], "_desc.csv")
 all <- do.call("cbind", lapply(files, read_csv))
 write_csv(all, "descriptors/all_desc.csv")
 
-SMLR_path = "~/ddh/S-MLR 1.2_24March2017/"
-descs <- lapply(desc_types, FUN = function(desc_type) {
+SMLR_path = "~/ddh/S-MLR1.2_24March2017/"
+SMLR_moldescs <- lapply(desc_types, FUN = function(desc_type) {
   desc_file <- paste0(desc_type, "_desc.csv")
   df <- 
     read_csv(paste0("descriptors/", desc_file)) %>%
@@ -37,14 +37,12 @@ descs <- lapply(desc_types, FUN = function(desc_type) {
     relocate(id) %>%
     mutate(pIC50 = smiles$pIC50[id]) %>%
     relocate(pIC50, .after = last_col()) %>%
-    filter(!is.na(pIC50))
-  write_csv(df, path = paste0(SMLR_path, "data/", desc_file))
-  df
-})
-names(descs) <- desc_types
-
-# TODO: Run SMLR tool programmatically 
-SMLR_moldescs <- lapply(desc_types, FUN = function(desc_type) {
+    filter(!is.na(pIC50)) %>%
+    write_csv(path = paste0(SMLR_path, "data/", desc_file))
+  
+  # Run the jar manually
+  system(paste("java -Xmx4000m -jar", paste0(SMLR_path, "SMLR1.2PV.jar")))
+  
   desc_file <- paste0(SMLR_path, "output/", desc_type, "_SMLR.csv")
   moldesc <- read_csv(desc_file)
 })
@@ -65,6 +63,7 @@ SMLR_models <- lapply(desc_types, FUN = function(desc_type) {
   train_mols <- moldesc %>%
     filter(id %in% train_rows) %>%
     select(!c(id)) %>%
+    #rbind(train_samples) %>%
     predict(scaler, newdata = .)
 
   # Step-wise regression model
@@ -235,7 +234,7 @@ mae_crits <- sapply(desc_types, FUN = function(desc_type) {
   df <- read_excel(paste0(XVP_path, "/output/", desc_type, "_ExternalValidation.xls"))
   mae_crit <- toupper(tail(df,1)[3])
 })
-
+names(mae_crits) <- desc_types
 
 # Select Desc Types based on DDH01 problem statement:
 # R2 > 0.7, LOO-Q2 > 0.7, Q2ext_F1 > 0.7, Tropsha’s criteria: Pass, 
@@ -252,29 +251,6 @@ diag_flags <- sapply(desc_types, FUN = function(desc_type) {
 
 # Choose the desc types that passed all the criteria
 sel_desc_types <- desc_types[diag_flags]
-
-# Run a random forest on the predictions from the selected models
-library(caret)
-get_ensemble_model <- function(sel_desc_types, moldescs, models) {
-  y_hats <- cbind(sapply(sel_desc_types, FUN = function(desc_type) {
-    moldesc <- moldescs[[desc_type]]
-    model <- models[[desc_type]]
-    scaler <- scalers[[desc_type]]
-    
-    predict(model, newdata = predict(scaler, moldesc))
-  }))
-  y_hats <- data.frame(y_hats)
-  print(y_hats)
-  y_hats$pIC50 <- smiles$pIC50[train_test_rows]
-  
-  rf_fit <- train(pIC50 ~ ., data = y_hats, method = "rf", metric = "RMSE")
-}
-
-# Train the ensemble
-rf_fit <- get_ensemble_model(sel_desc_types, SMLR_moldescs, SMLR_models)
-y_pred <- predict(rf_fit)
-
-
 
 # Hotelling's Test and Leverage (h)
 # Pg.  37 (GUIDANCE DOCUMENT ON THE VALIDATION OF (QUANTITATIVE)STRUCTURE-ACTIVITY RELATIONSHIPS [(Q)SAR] MODELS)
@@ -341,11 +317,11 @@ Leverage_AD <- function(model, train_moldesc, test_moldesc, type, plot_train = T
 
 # Multivariate Chebyshev Inequality with Estimated Mean and Variance by Stellato
 multivariate_chebychev <- function(train_test_mols, ext_mols) {
-  n = ncol(train_test_mols)
-  N = nrow(train_test_mols)
+  n <- ncol(train_test_mols)
+  N <- nrow(train_test_mols)
   
-  mu = colMeans(train_test_mols)
-  Sigma = cov(train_test_mols)
+  mu <- colMeans(train_test_mols)
+  Sigma <- cov(train_test_mols)
   
   ds_sq <- apply(ext_mols, 1, function(x) {mahalanobis(x, mu, Sigma)})
   probs <- sapply(ds_sq, FUN = function(lambda) {min(1, n*(N^2-1+N*lambda^2)/(N^2*lambda^2))})
@@ -360,97 +336,6 @@ Chebychev_AD <- function(train_moldesc, test_moldesc) {
   out_AD_Chebychev <- seq_along(probs_test)[-in_AD_Chebychev]
   
   return(list(in_AD_Chebychev, out_AD_Chebychev))
-}
-
-Tanimoto_AD <- function() {
-  # Tanimoto AD
-  
-  train_smiles <- parse.smiles(smiles$SMILES[train_rows])
-  test_smiles <- parse.smiles(smiles$SMILES[test_rows])
-  train_test_smiles <- parse.smiles(smiles$SMILES[train_test_rows])
-  blinded_smiles <- parse.smiles(smiles$SMILES[blinded_rows])
-  
-  # 1-NN in Training based on Test pIC50 (activity)
-  y_train <- smiles$pIC50[train_rows]
-  y_test <- smiles$pIC50[test_rows]
-  activ_1nn <- sapply(y_test, FUN = function(y) {which.min(abs(y_train - y))})
-  activ_1nn_sim <- sapply(seq_along(activ_1nn), FUN = function(i) {
-    y <- y_test[i]
-    row <- activ_1nn[i]
-    abs(y_train[row] - y)
-  })
-  
-  # Best sig_type using RMSE between 1-NN Activity and 1-NN Tanimoto similarity on training set
-  circular_types = c('ECFP0','ECFP2','ECFP4','ECFP6','FCFP0','FCFP2','FCFP4','FCFP6')
-  sig_types = c('standard', 'extended', 'graph', 'hybridization', 
-                'maccs', 'estate', 'pubchem', 'shortestpath', 
-                'substructure', paste('circular', circular_types, sep = '.'))
-  options("java.parameters"=c("-Xmx4000m"))
-  rmse <- sapply(sig_types, FUN = function(sig_type) {
-    
-    if (str_starts(sig_type, 'circular')) {
-      circ_type = strsplit(sig_type, '.', fixed = T)[[1]][2]
-      fps_train <- lapply(train_smiles, get.fingerprint, type='circular', circular.type=circ_type)
-      fps_test <- lapply(test_smiles, get.fingerprint, type='circular', circular.type=circ_type)
-    } else {
-      fps_train <- lapply(train_smiles, get.fingerprint, type=sig_type)
-      fps_test <- lapply(test_smiles, get.fingerprint, type=sig_type)
-    }
-    
-    test_sim <- fingerprint::fp.sim.matrix(fps_train, fps_test, method='tanimoto')
-    
-    # 1-NN Tanimoto
-    tanimoto_1nn <- apply(test_sim, 2, which.max)
-    tanimoto_1nn_sim <- sapply(seq_along(tanimoto_1nn_test), FUN = function(col) {
-      test_sim[tanimoto_1nn[col], col]
-    })
-    
-    # Find the activity similarity based on 1-NN Tanimoto
-    tanimoto_1nn_activ_sim <- sapply(seq_along(tanimoto_1nn), FUN = function(i) {
-      y <- y_test[i]
-      row <- tanimoto_1nn[i]
-      abs(y_train[row] - y)
-    })
-    
-    # RMSE
-    # sqrt(mean(tanimoto_1nn_activ_sim^2))
-    cor(tanimoto_1nn_activ_sim, tanimoto_1nn_sim)
-    #sqrt(mean((activ_1nn_sim - tanimoto_1nn_activ_sim)^2))
-  })
-  
-  #sig_type = names(which.min(rmse))
-  sig_type = 'maccs'
-  if (str_starts(sig_type, 'circular')) {
-    circ_type = strsplit(sig_type, '.', fixed = T)[[1]][2]
-    fps_train <- lapply(train_smiles, get.fingerprint, type='circular', circular.type=circ_type)
-    fps_test <- lapply(test_smiles, get.fingerprint, type='circular', circular.type=circ_type)
-    fps_blinded <- lapply(blinded_smiles, get.fingerprint, type='circular', circular.type=circ_type)
-  } else {
-    fps_train <- lapply(train_smiles, get.fingerprint, type=sig_type)
-    fps_test <- lapply(test_smiles, get.fingerprint, type=sig_type)
-    fps_blinded <- lapply(blinded_smiles, get.fingerprint, type=sig_type)
-  }
-  
-  test_sim <- fingerprint::fp.sim.matrix(fps_train, fps_test, method='tanimoto')
-  tanimoto_1nn_test <- apply(test_sim, 2, which.max)
-  tanimoto_1nn_sim_test <- sapply(seq_along(tanimoto_1nn_test), FUN = function(col) {
-    test_sim[tanimoto_1nn_test[col], col]
-  })
-  
-  blinded_sim <- fingerprint::fp.sim.matrix(fps_train, fps_blinded, method='tanimoto')
-  tanimoto_1nn <- apply(blinded_sim, 2, which.max)
-  tanimoto_1nn_sim <- sapply(seq_along(tanimoto_1nn), FUN = function(col) {
-    blinded_sim[tanimoto_1nn[col], col]
-  })
-  
-  sim_threshold <- 0.8
-  in_AD_Tanimoto_test <- which(tanimoto_1nn_sim_test >= sim_threshold)
-  out_AD_Tanimoto_test <- which(tanimoto_1nn_sim_test < sim_threshold)
-  
-  in_AD_Tanimoto <- which(tanimoto_1nn_sim >= sim_threshold)
-  out_AD_Tanimoto <- which(tanimoto_1nn_sim < sim_threshold)
-  
-  return(list(in_AD_Tanimoto_test, out_AD_Tanimoto_test, in_AD_Tanimoto, out_AD_Tanimoto))
 }
 
 ADS_path <- "~/ddh/ADUsingStdApproach/"
@@ -479,6 +364,44 @@ Standardization_AD <- function(desc_type, train_moldesc, test_moldesc, type = "t
   return(list(in_AD_Standardization, out_AD_Standardization))
   
 }
+
+# Skip rows that fall outside the range of train data
+Extrapolation_AD <- function(desc_type, moldesc) {
+  scaler <- scalers[[desc_type]]
+  lo <- scaler$rangeBounds[1]
+  hi <- scaler$rangeBounds[2]
+  
+  AD_Extrapolation <- 
+    moldesc %>% 
+    apply(1, FUN = function(x) all(x >= lo & x <= hi)) 
+  
+  in_AD_Extrapolation <- which(AD_Extrapolation)
+  out_AD_Extrapolation <- which(!AD_Extrapolation)
+  
+  return(list(in_AD_Extrapolation, out_AD_Extrapolation))
+}
+
+# Liu 
+library(rcdk)
+train_mols <- parse.smiles(smiles$SMILES[train_rows])
+test_mols <- parse.smiles(smiles$SMILES[test_rows])
+blinded_mols <- parse.smiles(smiles$SMILES[blinded_rows])
+
+sig_type = 'circular'
+circ_type = 'ECFP4'
+Tanimoto_AD <- function(x_mols, y_mols) {
+  fps_x <- lapply(x_mols, get.fingerprint, type=sig_type, circular.type=circ_type)
+  fps_y <- lapply(y_mols, get.fingerprint, type=sig_type, circular.type=circ_type)
+  
+  xy_sim <- fingerprint::fp.sim.matrix(fps_x, fps_y, method='tanimoto')
+  
+  sdc <- apply(xy_sim, 2, FUN = function(tdi) {sum(exp(-3*tdi/(1-tdi)))})
+}
+
+sdc_test <- Tanimoto_AD(train_mols, test_mols)
+sdc_blinded <- Tanimoto_AD(train_mols, blinded_mols) 
+
+
 
 # Finally !
 sel_desc_types <- desc_types[diag_flags]
@@ -519,6 +442,8 @@ AD_preds <- lapply(sel_desc_types, FUN = function(desc_type) {
                                                 train_moldesc, 
                                                 blinded_moldesc,
                                                 type = "blinded")
+  AD_Extrapolation_test <- Extrapolation_AD(desc_type, test_moldesc)
+  AD_Extrapolation_blinded <- Extrapolation_AD(desc_type, blinded_moldesc)
   
   pred_blinded <- predict(model, newdata = blinded_moldesc)
 
@@ -528,7 +453,9 @@ AD_preds <- lapply(sel_desc_types, FUN = function(desc_type) {
               AD_Chebychev_test = AD_Chebychev_test,
               AD_Chebychev_blinded = AD_Chebychev_blinded,
               AD_Standardization_test = AD_Standardization_test,
-              AD_Standardization_blinded = AD_Standardization_blinded
+              AD_Standardization_blinded = AD_Standardization_blinded,
+              AD_Extrapolation_test = AD_Extrapolation_test,
+              AD_Extrapolation_blinded = AD_Extrapolation_blinded
               )
          )
   
@@ -536,13 +463,30 @@ AD_preds <- lapply(sel_desc_types, FUN = function(desc_type) {
 names(AD_preds) <- sel_desc_types
 
 # Ensemble Blinded Predictions and AD Info
-ensemble_predict <- function(models, desc_files) {
-  preds <- mapply(FUN = function(model, desc_file) {
-    read_csv(desc_file) %>%
-      predict(model, newdata = .)
-  }, models, desc_files)
-  predict(rf_fit, newdata = preds)
+# Run a random forest on the predictions from the selected models
+library(caret)
+get_ensemble_model <- function(sel_desc_types, moldescs, models) {
+  y_hats <- cbind(sapply(sel_desc_types, FUN = function(desc_type) {
+    moldesc <- moldescs[[desc_type]]
+    model <- models[[desc_type]]
+    scaler <- scalers[[desc_type]]
+    
+    predict(model, newdata = predict(scaler, moldesc))
+  }))
+  y_hats <- data.frame(y_hats)
+  y_hats$pIC50 <- smiles$pIC50[train_test_rows]
+  print(y_hats)
+  
+  rf_fit <- train(pIC50 ~ ., data = y_hats, method = "rf", metric = "RMSE")
+  y_pred <- predict(rf_fit)
+  print(paste("RMSE=", sqrt(mean((y_pred-y_hats$pIC50)^2))))
+  return(rf_fit)
 }
+
+# Train the ensemble
+rf_fit <- get_ensemble_model(sel_desc_types, SMLR_moldescs, SMLR_models)
+
+
 
 #preds_blinded <- mapply(predict, models[sel_desc_types], descs[sel_desc_types][blinded_rows])
 preds_blinded <- cbind(sapply(sel_desc_types, FUN = function(desc_type) {
@@ -556,10 +500,12 @@ out_AD_blinded <- Reduce("intersect", lapply(sel_desc_types, FUN = function(desc
   out_AD_Leverage_blinded <- AD[["AD_Leverage_blinded"]][[2]]
   out_AD_Chebychev_blinded <- AD[["AD_Chebychev_blinded"]][[2]]
   out_AD_Standardization_blinded <- AD[["AD_Standardization_blinded"]][[2]]
+  out_AD_Extrapolation_blinded <- AD[["AD_Extrapolation_blinded"]][[2]]
   
   Reduce("union", list(out_AD_Leverage_blinded,
                        out_AD_Chebychev_blinded,
-                       out_AD_Standardization_blinded
+                       out_AD_Standardization_blinded,
+                       out_AD_Extrapolation_blinded
   ))
 }))
 
@@ -569,10 +515,12 @@ out_AD_test <- Reduce("intersect", lapply(sel_desc_types, FUN = function(desc_ty
   out_AD_Leverage_test <- AD[["AD_Leverage_test"]][[2]]
   out_AD_Chebychev_test <- AD[["AD_Chebychev_test"]][[2]]
   out_AD_Standardization_test <- AD[["AD_Standardization_test"]][[2]]
+  out_AD_Extrapolation_test <- AD[["AD_Extrapolation_test"]][[2]]
   
   Reduce("union", list(out_AD_Leverage_test,
                        out_AD_Chebychev_test,
-                       out_AD_Standardization_test
+                       out_AD_Standardization_test,
+                       out_AD_Extrapolation_test
   ))
 }))
 

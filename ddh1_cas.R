@@ -21,6 +21,8 @@ if (!file.exists(cas_smiles_file)) {
                             col_types = cols(CAS_ID = col_integer()))
 }
 
+padel_model <- models[["padel"]]
+padel_model_vars <- names(coef(padel_model))[-1]
 cas_padel <- 
   read_csv("cas_padel2.zip") %>% 
   mutate(CAS_ID = row_number()) %>%
@@ -28,7 +30,7 @@ cas_padel <-
   #predict(scalers[["padel"]], newdata = .)
 
 df1 <- data.frame(CAS_ID = cas_padel$CAS_ID) 
-df1$padel = predict(models[["padel"]], 
+df1$padel = predict(padel_model, 
                     newdata = predict(scalers[["padel"]], cas_padel))
 
 cas_rdkit <- 
@@ -48,7 +50,8 @@ df2$padel_rdkit <- predict(models[["padel_rdkit"]],
 cas_df <- 
   inner_join(df1, df2, by = "CAS_ID") %>%
   filter_all(all_vars(!is.infinite(.) & !is.na(.))) %>%
-  mutate(pIC50_pred = predict(rf_fit, newdata = .)) 
+  mutate(pIC50_pred = predict(rf_fit, newdata = .))
+  
 
 # CAS AD
 cas_moldescs = list()
@@ -78,24 +81,33 @@ cas_AD_Infos <- lapply(sel_desc_types, FUN = function(desc_type) {
                                                train_moldesc, 
                                                cas_moldesc,
                                                type = "cas")
+  
+  AD_Extrapolation_cas <- Extrapolation_AD(desc_type, cas_moldesc)
+                                           
+  
   return(list(AD_Leverage_cas = AD_Leverage_cas,
               AD_Chebychev_cas = AD_Chebychev_cas,
-              AD_Standardization_cas = AD_Standardization_cas))
+              AD_Standardization_cas = AD_Standardization_cas,
+              AD_Extrapolation_cas = AD_Extrapolation_cas))
 })
 names(cas_AD_Infos) <- sel_desc_types
+
 
 out_AD_cas <- Reduce("intersect", lapply(sel_desc_types, FUN = function(desc_type) {
   AD <- cas_AD_Infos[[desc_type]]
   out_AD_Leverage_cas <- AD[["AD_Leverage_cas"]][[2]]
   out_AD_Chebychev_cas <- AD[["AD_Chebychev_cas"]][[2]]
   out_AD_Standardization_cas <- AD[["AD_Standardization_cas"]][[2]]
+  out_AD_Extrapolation_cas <- AD[["AD_Extrapolation_cas"]][[2]]
   
   cas_ids <- cas_moldescs[[desc_type]]$CAS_ID
   Reduce("union", list(cas_ids[out_AD_Leverage_cas],
                        cas_ids[out_AD_Chebychev_cas],
-                       cas_ids[out_AD_Standardization_cas]
+                       cas_ids[out_AD_Standardization_cas],
+                       cas_ids[out_AD_Extrapolation_cas]
   ))
 }))
+
 
 # DDT Input Form 3
 cas_df_100 <- cas_df %>%
