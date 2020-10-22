@@ -28,21 +28,23 @@ all <- do.call("cbind", lapply(files, read_csv))
 write_csv(all, "descriptors/all_desc.csv")
 
 SMLR_path = "~/ddh/S-MLR1.2_24March2017/"
+run_SMLR <- FALSE
 SMLR_moldescs <- lapply(desc_types, FUN = function(desc_type) {
-  desc_file <- paste0(desc_type, "_desc.csv")
-  df <- 
-    read_csv(paste0("descriptors/", desc_file)) %>%
-    select(where(is.numeric)) %>%
-    mutate(id = 1:nrow(.)) %>%
-    relocate(id) %>%
-    mutate(pIC50 = smiles$pIC50[id]) %>%
-    relocate(pIC50, .after = last_col()) %>%
-    filter(!is.na(pIC50)) %>%
-    write_csv(path = paste0(SMLR_path, "data/", desc_file))
-  
-  # Run the jar manually
-  system(paste("java -Xmx4000m -jar", paste0(SMLR_path, "SMLR1.2PV.jar")))
-  
+  if (run_SMLR) {
+    desc_file <- paste0(desc_type, "_desc.csv")
+    df <- 
+      read_csv(paste0("descriptors/", desc_file)) %>%
+      select(where(is.numeric)) %>%
+      mutate(id = 1:nrow(.)) %>%
+      relocate(id) %>%
+      mutate(pIC50 = smiles$pIC50[id]) %>%
+      relocate(pIC50, .after = last_col()) %>%
+      filter(!is.na(pIC50)) %>%
+      write_csv(path = paste0(SMLR_path, "data/", desc_file))
+    
+    # Run the jar manually
+    system(paste("java -Xmx4000m -jar", paste0(SMLR_path, "SMLR1.2PV.jar")))
+  }
   desc_file <- paste0(SMLR_path, "output/", desc_type, "_SMLR.csv")
   moldesc <- read_csv(desc_file)
 })
@@ -63,7 +65,6 @@ SMLR_models <- lapply(desc_types, FUN = function(desc_type) {
   train_mols <- moldesc %>%
     filter(id %in% train_rows) %>%
     select(!c(id)) %>%
-    #rbind(train_samples) %>%
     predict(scaler, newdata = .)
 
   # Step-wise regression model
@@ -221,20 +222,21 @@ mu_y_train
 range_y_train <- diff(range(y_train))
 range_y_train
 
+run_XVP <- FALSE
 mae_crits <- sapply(desc_types, FUN = function(desc_type) {
   print(desc_type)
   diag <- model_diags[[desc_type]]
-  df <- data.frame(Yobs_test = diag$test_obs_pred.y_test,
-                   Ypred_test = diag$test_obs_pred.yhat_test)
-  write_excel_csv(df, paste0(XVP_path, "/data/ytest_", desc_type, ".csv"))
-  
-  # Run the jar manually
-  system(paste("java -Xmx4000m -jar", paste0(XVP_path, "XternalValidationPlusUpdated.jar")))
-  
+  if (run_XVP ) {
+    df <- data.frame(Yobs_test = diag$test_obs_pred.y_test,
+                     Ypred_test = diag$test_obs_pred.yhat_test)
+    write_excel_csv(df, paste0(XVP_path, "/data/ytest_", desc_type, ".csv"))
+    # Run the jar manually
+     system(paste("java -Xmx4000m -jar", paste0(XVP_path, "XternalValidationPlusUpdated.jar")))
+  }
   df <- read_excel(paste0(XVP_path, "/output/", desc_type, "_ExternalValidation.xls"))
   mae_crit <- toupper(tail(df,1)[3])
 })
-names(mae_crits) <- desc_types
+#names(mae_crits) <- desc_types
 
 # Select Desc Types based on DDH01 problem statement:
 # R2 > 0.7, LOO-Q2 > 0.7, Q2ext_F1 > 0.7, Tropsha’s criteria: Pass, 
@@ -339,20 +341,23 @@ Chebychev_AD <- function(train_moldesc, test_moldesc) {
 }
 
 ADS_path <- "~/ddh/ADUsingStdApproach/"
+run_ADS <- FALSE
 Standardization_AD <- function(desc_type, train_moldesc, test_moldesc, type = "test") {
   print(desc_type)
-  train_moldesc %>%
-    mutate(id = 1: nrow(.)) %>%
-    relocate(id) %>%
-    write_excel_csv(path = paste0(ADS_path, "data/", desc_type, "_train.csv"), na = "")
-  
-  test_moldesc %>%
-    mutate(id = 1: nrow(.)) %>%
-    relocate(id) %>%
-    write_excel_csv(path = paste0(ADS_path, "data/", desc_type, "_", type, ".csv"), na ="")
-  
-  # Run the jar manually
-  system(paste("java -Xmx4000m -jar", paste0(ADS_path, "ADUsingStdApproach.jar")))
+  if (run_ADS) {
+    train_moldesc %>%
+      mutate(id = 1: nrow(.)) %>%
+      relocate(id) %>%
+      write_excel_csv(path = paste0(ADS_path, "data/", desc_type, "_train.csv"), na = "")
+    
+    test_moldesc %>%
+      mutate(id = 1: nrow(.)) %>%
+      relocate(id) %>%
+      write_excel_csv(path = paste0(ADS_path, "data/", desc_type, "_", type, ".csv"), na ="")
+    
+    # Run the jar manually
+    system(paste("java -Xmx4000m -jar", paste0(ADS_path, "ADUsingStdApproach.jar")))
+  }
   
   AD_Standardization <- 
     read_csv(paste0(ADS_path, "output/", desc_type,"_", type, "_Test_AD.csv")) %>%
@@ -373,7 +378,7 @@ Extrapolation_AD <- function(desc_type, moldesc) {
   
   AD_Extrapolation <- 
     moldesc %>% 
-    apply(1, FUN = function(x) all(x >= lo & x <= hi)) 
+    apply(1, FUN = function(x) all((x >= lo) & (x <= hi))) 
   
   in_AD_Extrapolation <- which(AD_Extrapolation)
   out_AD_Extrapolation <- which(!AD_Extrapolation)
@@ -382,7 +387,7 @@ Extrapolation_AD <- function(desc_type, moldesc) {
 }
 
 # Liu 
-library(rcdk)
+library(rcdk, lib.loc = "lib")
 train_mols <- parse.smiles(smiles$SMILES[train_rows])
 test_mols <- parse.smiles(smiles$SMILES[test_rows])
 blinded_mols <- parse.smiles(smiles$SMILES[blinded_rows])
@@ -398,9 +403,8 @@ Tanimoto_AD <- function(x_mols, y_mols) {
   sdc <- apply(xy_sim, 2, FUN = function(tdi) {sum(exp(-3*tdi/(1-tdi)))})
 }
 
-sdc_test <- Tanimoto_AD(train_mols, test_mols)
-sdc_blinded <- Tanimoto_AD(train_mols, blinded_mols) 
-
+#sdc_test <- Tanimoto_AD(train_mols, test_mols)
+#sdc_blinded <- Tanimoto_AD(train_mols, blinded_mols) 
 
 
 # Finally !
@@ -463,39 +467,44 @@ AD_preds <- lapply(sel_desc_types, FUN = function(desc_type) {
 names(AD_preds) <- sel_desc_types
 
 # Ensemble Blinded Predictions and AD Info
+y_hats <- cbind(sapply(sel_desc_types, FUN = function(desc_type) {
+  moldesc <- SMLR_moldescs[[desc_type]]
+  model <- SMLR_models[[desc_type]]
+  scaler <- scalers[[desc_type]]
+  
+  predict(model, newdata = predict(scaler, moldesc))
+}))
+y_hats <- data.frame(y_hats)
+#y_hats$pIC50 <- smiles$pIC50[train_test_rows]
+print(y_hats)
+
+X <- y_hats
+y <- smiles$pIC50[train_test_rows]
+
 # Run a random forest on the predictions from the selected models
 library(caret)
-get_ensemble_model <- function(sel_desc_types, moldescs, models) {
-  y_hats <- cbind(sapply(sel_desc_types, FUN = function(desc_type) {
-    moldesc <- moldescs[[desc_type]]
-    model <- models[[desc_type]]
-    scaler <- scalers[[desc_type]]
-    
-    predict(model, newdata = predict(scaler, moldesc))
+rf_fit <- train(X, y, method = "rf", metric = "RMSE")
+y_pred <- predict(rf_fit)
+print(paste("RMSE=", sqrt(mean((y_pred-y)^2))))
+
+library(reticulate)
+source_python("ensemble.py")
+ereg <- get_ensemble_model2(X,y)
+
+out_AD_Extrapolation_intersect <- 
+  Reduce("intersect", sapply(sel_desc_types, function(desc_type) {
+    AD_preds[[desc_type]][["AD_Extrapolation_blinded"]][[2]]
   }))
-  y_hats <- data.frame(y_hats)
-  y_hats$pIC50 <- smiles$pIC50[train_test_rows]
-  print(y_hats)
-  
-  rf_fit <- train(pIC50 ~ ., data = y_hats, method = "rf", metric = "RMSE")
-  y_pred <- predict(rf_fit)
-  print(paste("RMSE=", sqrt(mean((y_pred-y_hats$pIC50)^2))))
-  return(rf_fit)
-}
 
-# Train the ensemble
-rf_fit <- get_ensemble_model(sel_desc_types, SMLR_moldescs, SMLR_models)
+out_AD_Extrapolation_union <- 
+  Reduce("union", sapply(sel_desc_types, function(desc_type) {
+    AD_preds[[desc_type]][["AD_Extrapolation_blinded"]][[2]]
+  }))
 
 
-
-#preds_blinded <- mapply(predict, models[sel_desc_types], descs[sel_desc_types][blinded_rows])
-preds_blinded <- cbind(sapply(sel_desc_types, FUN = function(desc_type) {
-  AD_preds[[desc_type]][["pred_blinded"]]
-}))
-pred_blinded_ensemble <- predict(rf_fit, newdata = preds_blinded) 
 
 # Ensemble Blinded AD Information
-out_AD_blinded <- Reduce("intersect", lapply(sel_desc_types, FUN = function(desc_type) {
+out_AD_blinded <- sapply(sel_desc_types, FUN = function(desc_type) {
   AD <- AD_preds[[desc_type]]
   out_AD_Leverage_blinded <- AD[["AD_Leverage_blinded"]][[2]]
   out_AD_Chebychev_blinded <- AD[["AD_Chebychev_blinded"]][[2]]
@@ -507,10 +516,31 @@ out_AD_blinded <- Reduce("intersect", lapply(sel_desc_types, FUN = function(desc
                        out_AD_Standardization_blinded,
                        out_AD_Extrapolation_blinded
   ))
-}))
+})
+
+out_AD_blinded_intersect <- Reduce("intersect", out_AD_blinded)
+
+# Write predictions and AD information to CSV files
+
+# DDT Input Form 2
+preds_blinded <- 
+  data.frame(cbind(sapply(sel_desc_types, FUN = function(desc_type) {
+    AD_preds[[desc_type]][["pred_blinded"]]
+  }))) %>%
+  mutate(ensemble = ereg$predict(.)) %>%
+  mutate(pIC50_pred = case_when(
+    row_number() %in% out_AD_blinded_intersect ~ .$ensemble,
+    row_number() %in% out_AD_blinded["padel"] ~ .$padel_rdkit,
+    row_number() %in% out_AD_blinded["padel_rdkit"] ~ .$padel,
+    TRUE ~ .$ensemble
+  )) %>%
+  mutate(AD = if_else(row_number() %in% out_AD_blinded_intersect, "Outside AD", "-")) %>%
+  mutate(id = blinded_rows) %>%
+  select(c("id", "pIC50_pred", "AD")) %>%
+  write_excel_csv("results/Input Form 2_DDT1-01.csv")
 
 # Ensemble Test AD Information
-out_AD_test <- Reduce("intersect", lapply(sel_desc_types, FUN = function(desc_type) {
+out_AD_test <- sapply(sel_desc_types, FUN = function(desc_type) {
   AD <- AD_preds[[desc_type]]
   out_AD_Leverage_test <- AD[["AD_Leverage_test"]][[2]]
   out_AD_Chebychev_test <- AD[["AD_Chebychev_test"]][[2]]
@@ -522,15 +552,9 @@ out_AD_test <- Reduce("intersect", lapply(sel_desc_types, FUN = function(desc_ty
                        out_AD_Standardization_test,
                        out_AD_Extrapolation_test
   ))
-}))
+})
 
-# Write predictions and AD information to CSV files
-
-# DDT Input Form 2
-preds_df <- 
-  data.frame(id = blinded_rows, pIC50_pred = pred_blinded_ensemble) %>%
-  mutate(AD = if_else(id %in% blinded_rows[out_AD_blinded], "Outside AD", "-")) %>%
-  write_excel_csv("results/Input Form 2_DDT1-01.csv")
+out_AD_test_intersect <- Reduce("intersect", out_AD_test)
 
 # DDT Input Form 1
 sapply(sel_desc_types, FUN = function(desc_type) {
@@ -550,7 +574,7 @@ sapply(sel_desc_types, FUN = function(desc_type) {
                         diag$mae_test,
                         ifelse(diag$tropsha_cond, "Yes", "No"),
                         mae_crits[desc_type],
-                        paste(train_rows[out_AD_test])
+                        paste(smiles$id[test_rows[out_AD_test[[desc_type]]]], collapse=",")
                         )
     ) %>%
     write_excel_csv(csv_file)
@@ -582,33 +606,3 @@ sapply(sel_desc_types, FUN = function(desc_type) {
   
   
 })
-
-
-# Sanity check using MACCS molecular fingerprint
-library(rcdk)
-train_smiles <- parse.smiles(smiles$SMILES[train_rows])
-test_smiles <- parse.smiles(smiles$SMILES[test_rows])
-train_test_smiles <- parse.smiles(smiles$SMILES[train_test_rows])
-blinded_smiles <- parse.smiles(smiles$SMILES[blinded_rows])
-
-sig_type = 'maccs'
-fps_train <- lapply(train_smiles, get.fingerprint, type=sig_type)
-fps_test <- lapply(test_smiles, get.fingerprint, type=sig_type)
-fps_blinded <- lapply(blinded_smiles, get.fingerprint, type=sig_type)
-
-blinded_sim <- fingerprint::fp.sim.matrix(fps_train, fps_blinded, method='tanimoto')
-tanimoto_1nn <- apply(blinded_sim, 2, which.max)
-pIC50_1nn <- smiles$pIC50[train_rows[tanimoto_1nn]]
-tanimoto_1nn_sim <- sapply(seq_along(tanimoto_1nn), FUN = function(col) {
-  blinded_sim[tanimoto_1nn[col], col]
-})
-df <- data.frame(yhat = pred_blinded_ensemble, y = pIC50_1nn, sim = tanimoto_1nn_sim)
-df$yerr <- df$y - df$yhat
-
-ggplot(df, aes(yhat, y)) +
-  geom_point(aes(size = sim)) +
-  geom_label(aes(label = paste0('B', 1:nrow(df))), nudge_y = 0.25)
-
-
-
-
